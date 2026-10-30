@@ -6,7 +6,7 @@
 // -----------------------------------------------------------------------------
 
 import { createServer } from 'node:http';
-import { FIXTURES } from './setup.js';
+import { FIXTURES, MINUTE, file, line } from './setup.js';
 
 export async function startServer(clock, answer = () => null) {
   const requests = [];
@@ -18,8 +18,15 @@ export async function startServer(clock, answer = () => null) {
       res.end(custom.body ?? '');
       return;
     }
-    const id = /^\/([A-Z0-9]{5})\.txt$/.exec(req.url)?.[1];
-    const body = id && FIXTURES[id] ? Buffer.from(FIXTURES[id], 'latin1') : null;
+    const id = /^\/([A-Z0-9]{4,5})\.txt$/.exec(req.url)?.[1];
+    // The format of the captures, dated now (the age is judged against the real Date).
+    const body =
+      id && FIXTURES[id]
+        ? Buffer.from(
+            file(line(Date.now() - 10 * MINUTE, { WSPD: 3, WTMP: 15.5, PRES: 1012 })),
+            'latin1',
+          )
+        : null;
     if (!body) {
       res.writeHead(404, { 'content-type': 'text/html', date: new Date().toUTCString() });
       res.end('not found');

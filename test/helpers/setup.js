@@ -110,7 +110,7 @@ const abortable = (signal, kind) =>
     signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
   });
 
-export const stationOf = (url) => /\/([A-Z0-9]{5})\.txt$/.exec(url)?.[1] ?? null;
+export const stationOf = (url) => /\/([A-Z0-9]{4,5})\.txt$/.exec(url)?.[1] ?? null;
 
 /** A scripted NDBC: every request is recorded with the virtual time. */
 export function createApi(world = defaultWorld) {

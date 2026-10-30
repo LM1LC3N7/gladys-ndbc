@@ -3,7 +3,9 @@
 Unofficial [Gladys Assistant](https://gladysassistant.com) integration for the **NOAA National Data Buoy
 Center** (NDBC): the observations of buoys and coastal stations (waves, wind, water and air temperature,
 pressure, visibility, tide) read from the public [realtime files](https://www.ndbc.noaa.gov/data/realtime2/).
-No account, no API key; US government data in the public domain (source: NOAA National Data Buoy Center).
+No account, no API key; US government data in the public domain (source: NOAA National Data Buoy Center),
+except the partner stations relayed by the NDBC, which keep their owner's terms (Environment and Climate Change
+Canada buoys: Open Government Licence – Canada).
 
 > This integration is not an official source, and not for navigation. Check the NDBC and the official marine
 > forecasts before going out on the water.

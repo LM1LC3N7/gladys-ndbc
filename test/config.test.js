@@ -12,10 +12,15 @@ test('station ids: separators, case, duplicates', () => {
     errors: [],
   });
   assert.deepEqual(readStations(' 46026 '), { stations: ['46026'], errors: [] });
+  // The Gulf of Mexico platforms have 4-character ids (KATP, KGBK).
+  assert.deepEqual(readStations('katp, KGBK, 4602'), {
+    stations: ['KATP', 'KGBK', '4602'],
+    errors: [],
+  });
 });
 
 test('a part that is not an id is left out and named; the others are kept', () => {
-  for (const bad of ['4602', '460266', '46-26', 'é6026', '46026\u0000', '../46', '4602.']) {
+  for (const bad of ['460', '460266', '46-26', 'é6026', '46026\u0000', '../46', '4602.']) {
     assert.deepEqual(
       readStations(`44025, ${bad}`),
       { stations: ['44025'], errors: ['stations_invalid'] },

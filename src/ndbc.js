@@ -66,7 +66,10 @@ export async function getStationHead(
     timers.clearTimeout(timer);
     return { ok: false, kind: timedOut ? 'timeout' : 'network', serverDate: null };
   }
-  const serverDate = readHttpDate(response.headers.get('date'));
+  const date = readHttpDate(response.headers.get('date'));
+  // A copy served by the CDN carries the Date of the origin and its `Age`:
+  // the time of the answer is Date + Age (seen live: Age up to 576 s).
+  const serverDate = date === null ? null : date + readAge(response.headers.get('age'));
   try {
     const status = response.status;
     if (status === 304) {
@@ -80,7 +83,7 @@ export async function getStationHead(
         ok: false,
         kind: status === 429 ? 'rate' : 'server',
         status,
-        retryAfter: readRetryAfter(response.headers.get('retry-after'), serverDate),
+        retryAfter: readRetryAfter(response.headers.get('retry-after'), date),
         serverDate,
       };
     }
@@ -171,6 +174,12 @@ export function readHttpDate(value) {
   return utc(+match[3], month + 1, +match[1], +match[4], +match[5], +match[6]);
 }
 
+/** The `Age` of a cached answer in ms: whole seconds, at most a day; else 0. */
+export function readAge(value) {
+  if (typeof value !== 'string' || !/^\d{1,10}$/.test(value.trim())) return 0;
+  return Math.min(Number(value.trim()), 86400) * 1000;
+}
+
 /** Retry-After in ms (seconds or an HTTP date), bounded by the caller; else null. */
 export function readRetryAfter(value, serverDate) {
   if (typeof value !== 'string') return null;
@@ -259,15 +268,19 @@ function readRow(cells, width, columns) {
     if (!NUMBER.test(cell)) return null;
     const value = Number(cell);
     if (variable.integer && !Number.isInteger(value)) continue;
+    if (variable.positive && value <= 0) continue;
     if (value < variable.min || value > variable.max) continue;
     values[variable.key] = convert(variable, value);
   }
   return { at, values };
 }
 
-/** The value in the unit published (exact factors, rounded to the precision of the source). */
+/**
+ * The value in the unit published (exact factors, rounded to the precision of
+ * the source); -0 (as `-0.0` in a file) is published as 0.
+ */
 export function convert(variable, value) {
-  if (!variable.factor) return value;
+  if (!variable.factor) return value + 0;
   const scale = 10 ** variable.decimals;
-  return Math.round(value * variable.factor * scale) / scale;
+  return Math.round(value * variable.factor * scale) / scale + 0;
 }

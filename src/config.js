@@ -1,7 +1,7 @@
 // -----------------------------------------------------------------------------
 // The configuration filled in by the user, read strictly: an empty field is
-// absent (never 0), a number is a plain integer, a station id is five letters
-// or digits (NDBC ids: `46026`, `PSBM1`), upper-cased as on the server. A
+// absent (never 0), a number is a plain integer, a station id is four or five
+// letters or digits (NDBC ids: `46026`, `PSBM1`, `KATP`), upper-cased as on the server. A
 // refused field is named, never echoed back.
 // -----------------------------------------------------------------------------
 
@@ -12,8 +12,13 @@ export const LANGUAGES = ['en', 'fr'];
 const isBlank = (value) =>
   value === undefined || value === null || (typeof value === 'string' && value.trim() === '');
 
-/** An NDBC station id: five ASCII letters or digits. */
-export const STATION_ID = /^[A-Z0-9]{5}$/;
+/**
+ * An NDBC station id: 4 or 5 ASCII letters or digits (5 for buoys and C-MAN
+ * stations, 4 for the Gulf of Mexico platforms: KATP, KGBK...; seen in
+ * `latest_obs.txt` on 2026-10-30, 852 ids of 5 and 14 of 4). It goes into a URL:
+ * nothing wider.
+ */
+export const STATION_ID = /^[A-Z0-9]{4,5}$/;
 
 /**
  * The station ids: comma, semicolon or space separated, unique. A part that

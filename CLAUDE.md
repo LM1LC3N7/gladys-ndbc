@@ -48,7 +48,7 @@ scripts/cover.mjs                 generates cover.png (800x534), plain Node
 
 NDBC rules kept by the code: one request at a time, 3 s between two starts; only the head of a file (`Range`),
 `If-None-Match`; never sooner than the interval (restart, reconnection, unchanged configuration, Discovery,
-test button); 429/5xx pause kept in /data; the age of an observation judged against the `Date` header; nothing
+test button); 429 pause kept in /data, a 5xx on one station backs it off alone; the age of an observation judged against the `Date` header; nothing
 older than 2 h published, `MM` never published, each observation published once.
 
 ## Rules

@@ -12,6 +12,7 @@ import {
   getStationHead,
   parseRealtime,
   readHttpDate,
+  readAge,
   readRetryAfter,
   stationUrl,
 } from '../src/ndbc.js';
@@ -459,4 +460,44 @@ test('a year below 100 stays itself (never read as 19xx)', () => {
   expected.setUTCHours(5, 0, 0, 0);
   assert.equal(p.rows[0].at, expected.getTime());
   assert.ok(p.rows[0].at < Date.UTC(1900, 0, 1));
+});
+
+test('a cached copy: the time of the answer is Date + Age (bounded to a day)', async () => {
+  const headers = (extra) => ({ 'content-type': 'text/plain', date: DATE, ...extra });
+  let r = await head(new Response('x', { headers: headers({ age: '576' }) }));
+  assert.equal(r.result.serverDate, at('2026-10-30T06:08:00Z') + 576000);
+  r = await head(new Response(null, { status: 304, headers: { date: DATE, age: '60' } }), {
+    etag: '"a"',
+  });
+  assert.equal(r.result.serverDate, at('2026-10-30T06:09:00Z'));
+  // A Retry-After date stays relative to the Date of the answer.
+  r = await head(
+    new Response('x', {
+      status: 429,
+      headers: { date: DATE, age: '60', 'retry-after': 'Fri, 30 Oct 2026 06:10:00 GMT' },
+    }),
+  );
+  assert.equal(r.result.retryAfter, 120000);
+  assert.equal(readAge('0'), 0);
+  assert.equal(readAge(' 30 '), 30000);
+  assert.equal(readAge('999999'), 86400000);
+  for (const bad of [null, '', '-5', '1.5', 'abc', '12345678901'])
+    assert.equal(readAge(bad), 0, String(bad));
+});
+
+test('a wave period of 0 s is "not available", never a measure', () => {
+  const t = at('2026-10-30T05:00Z');
+  const p = parseRealtime(file(line(t, { WVHT: 0.5, DPD: 0, APD: '0.0' })), true);
+  assert.deepEqual(p.rows[0].values, { 'wave-height': 0.5 });
+  const q = parseRealtime(file(line(t, { DPD: 0.1, APD: 3 })), true);
+  assert.deepEqual(q.rows[0].values, { 'dominant-wave-period': 0.1, 'average-wave-period': 3 });
+});
+
+test('-0.0 in a file is published as 0, never -0', () => {
+  const p = parseRealtime(
+    file(line(at('2026-10-30T05:00Z'), { PTDY: '-0.0', TIDE: '-0.001' })),
+    true,
+  );
+  assert.ok(Object.is(p.rows[0].values['pressure-tendency'], 0));
+  assert.ok(Object.is(p.rows[0].values.tide, 0));
 });

@@ -75,7 +75,8 @@ export const DEVICE_TYPE = 'station';
  * The variables of a realtime2 `.txt` file (NDBC "Standard Meteorological
  * Data"), with the unit its second header line must show, the feature it
  * feeds, its conversion and its plausible range (outside: not a measure).
- * The ranges leave out the "9" fill values of the NDBC formats (99, 999,
+ * `positive`: 0 is "not available" (a wave period of 0 s with a wave height, as
+ * some partner buoys send), never a measure. The ranges leave out the "9" fill values of the NDBC formats (99, 999,
  * 9999, read as missing by ndbc-api). Exact conversions: 1 nmi = 1.852 km, 1 ft = 0.3048 m.
  */
 export const VARIABLES = Object.freeze([
@@ -83,8 +84,8 @@ export const VARIABLES = Object.freeze([
   { column: 'WSPD', unit: 'm/s', key: 'wind-speed', min: 0, max: 98 },
   { column: 'GST', unit: 'm/s', key: 'wind-gust', min: 0, max: 98 },
   { column: 'WVHT', unit: 'm', key: 'wave-height', min: 0, max: 40 },
-  { column: 'DPD', unit: 'sec', key: 'dominant-wave-period', min: 0, max: 60 },
-  { column: 'APD', unit: 'sec', key: 'average-wave-period', min: 0, max: 60 },
+  { column: 'DPD', unit: 'sec', key: 'dominant-wave-period', min: 0, max: 60, positive: true },
+  { column: 'APD', unit: 'sec', key: 'average-wave-period', min: 0, max: 60, positive: true },
   { column: 'MWD', unit: 'degT', key: 'wave-direction', min: 0, max: 360, integer: true },
   { column: 'PRES', unit: 'hPa', key: 'pressure', min: 800, max: 1100 },
   { column: 'ATMP', unit: 'degC', key: 'air-temperature', min: -70, max: 60 },

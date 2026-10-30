@@ -11,11 +11,13 @@
 //   - the read period is measured from the start of a round, never shorter
 //     than the interval: neither a restart (the time of the last attempt is in
 //     /data, written before the round), nor a reconnection, a saved but
-//     unchanged configuration, Discovery or the test button reads sooner; a
-//     configuration that changes the stations reads them at most once a minute;
-//   - a 429, a 5xx or another unexpected answer pauses every read (bounded,
-//     doubled, kept in /data); a station without realtime file (404) is tried
-//     again after an hour, doubled up to a day.
+//     unchanged configuration, Discovery or the test button reads sooner; the
+//     stations added to the configuration are read alone, at most once a minute;
+//   - a 429 pauses every read (bounded, doubled, kept in /data); a 5xx or
+//     another unexpected answer on one file backs that station off alone (2 min
+//     doubled), and pauses every read only when every station of a round
+//     failed so; a station without realtime file (404) is tried again after an
+//     hour, doubled up to a day, each back-off on its own timer.
 //
 // Clocks: the decisions (gap, pause, period, age of a value) use the
 // monotonic clock, read once per decision; the wall clock serves only /data
@@ -43,7 +45,7 @@ import {
   SECOND,
   VARIABLES,
 } from './constants.js';
-import { normalizeConfig } from './config.js';
+import { STATION_ID, normalizeConfig } from './config.js';
 import { buildDevices, stationIds } from './devices.js';
 import { M, configErrors, failure, formatTime } from './i18n.js';
 import { latestValues } from './model.js';
@@ -63,8 +65,10 @@ const isTime = (value) => Number.isFinite(value) && value > 0;
 const KEYS = VARIABLES.map((v) => v.key);
 /** The answers that pause every read: 429, 5xx, other unexpected statuses. */
 const PAUSING = ['rate', 'server', 'http'];
+/** The answers that back one station off: no file, server error, other status. */
+const BACKED_OFF = ['missing', 'server', 'http'];
 /** The failures read again before the next round (a passing cause). */
-const RETRIED = ['network', 'timeout', 'rate', 'server', 'http', 'paused'];
+const RETRIED = ['network', 'timeout', 'rate', 'paused'];
 const NO_PAUSE = () => ({
   until: null,
   kind: null,
@@ -113,8 +117,11 @@ export class NdbcApp {
     this.retry = null;
     /** Per station: the last read (success, or failure with the last success). */
     this.results = new Map();
-    /** Per station: the 404 back-off `{ untilMono, level }`. */
-    this.missing = new Map();
+    /** Per station: its own back-off (404, 5xx, other status) `{ untilMono, level, kind }`. */
+    this.backoff = new Map();
+    /** Stations added to the configuration, read alone: `{ ids, dueMono }`. */
+    this.added = null;
+    this.lastAddedMono = -Infinity;
     this.lastStatus = null;
     this.lastStations = null;
     /** Monotonic times of the states published in the last minute. */
@@ -267,8 +274,8 @@ export class NdbcApp {
     // Forget the stations that are gone.
     for (const id of [...this.results.keys()])
       if (!config.stations.includes(id)) this.results.delete(id);
-    for (const id of [...this.missing.keys()])
-      if (!config.stations.includes(id)) this.missing.delete(id);
+    for (const id of [...this.backoff.keys()])
+      if (!config.stations.includes(id)) this.backoff.delete(id);
     if (config.stations.length === 0) {
       const errors = configErrors(config.errors);
       this.nextDueMono = null;
@@ -284,14 +291,16 @@ export class NdbcApp {
     }
     if (this.dataTells === null) await this.checkData();
     if (gen !== this.gen) return;
-    const key = JSON.stringify(config.stations);
-    const changed = this.lastStations !== null && key !== this.lastStations;
-    this.lastStations = key;
+    // The stations added since the last configuration of this process.
+    const added = this.lastStations
+      ? config.stations.filter((id) => !this.lastStations.includes(id))
+      : [];
+    this.lastStations = [...config.stations];
 
     // When is the first round due? One clock read for the decision.
     const wall = this.now();
     const mono = this.monotonic();
-    const gap = changed ? CHANGE_GAP : config.refreshMinutes * MINUTE;
+    const gap = config.refreshMinutes * MINUTE;
     let wait = 0;
     const last = this.persisted.lastAttemptAt;
     if (this.lastAttemptMono !== null) {
@@ -320,6 +329,13 @@ export class NdbcApp {
       const ids = new Set([...this.retry.ids].filter((id) => config.stations.includes(id)));
       this.retry = ids.size > 0 ? { ...this.retry, ids } : null;
     }
+    // Added stations are read alone, at most once a minute; the others keep their turn.
+    const pending = new Set([...(this.added?.ids ?? []), ...added]);
+    const kept = [...pending].filter((id) => config.stations.includes(id));
+    this.added =
+      kept.length > 0
+        ? { ids: new Set(kept), dueMono: Math.max(mono, this.lastAddedMono + CHANGE_GAP) }
+        : null;
     this.scheduleCycle(this.leftBefore(mono), gen);
     await this.updateStatus(gen);
   }
@@ -405,7 +421,7 @@ export class NdbcApp {
     }
     if (data.stations && typeof data.stations === 'object' && !Array.isArray(data.stations)) {
       for (const [id, entry] of Object.entries(data.stations).slice(0, KEPT_STATIONS_MAX)) {
-        if (!/^[A-Z0-9]{5}$/.test(id) || !entry || typeof entry !== 'object') continue;
+        if (!STATION_ID.test(id) || !entry || typeof entry !== 'object') continue;
         const stamps = {};
         for (const key of KEYS) {
           const at = entry.stamps?.[key];
@@ -486,11 +502,30 @@ export class NdbcApp {
 
   // --- The read round --------------------------------------------------------
 
-  /** The time left before the next round, full or retry, the pause included. */
+  /**
+   * The time left before the next read: the full round, a retry, the added
+   * stations or the end of a station back-off, whichever comes first; the
+   * pause included.
+   */
   leftBefore(mono) {
-    const full = (this.nextDueMono ?? mono) - mono;
-    const retry = this.retry ? this.retry.dueMono - mono : Infinity;
-    return Math.max(this.pausedFor(mono), Math.min(full, retry));
+    let next = (this.nextDueMono ?? mono) - mono;
+    if (this.retry) next = Math.min(next, this.retry.dueMono - mono);
+    if (this.added) next = Math.min(next, this.added.dueMono - mono);
+    for (const back of this.backoff.values()) next = Math.min(next, back.untilMono - mono);
+    return Math.max(this.pausedFor(mono), next);
+  }
+
+  /** The stations due before the full round: retry, added, back-off ended. */
+  dueStations(mono) {
+    const ids = new Set();
+    if (this.retry && this.retry.dueMono <= mono) for (const id of this.retry.ids) ids.add(id);
+    if (this.added && this.added.dueMono <= mono) {
+      for (const id of this.added.ids) ids.add(id);
+      this.added = null;
+      this.lastAddedMono = mono;
+    }
+    for (const [id, back] of this.backoff) if (back.untilMono <= mono) ids.add(id);
+    return ids;
   }
 
   async runCycle(gen) {
@@ -504,12 +539,12 @@ export class NdbcApp {
       return;
     }
     const full = (this.nextDueMono ?? mono0) <= mono0;
-    await this.round(gen, full ? null : this.retry.ids);
+    await this.round(gen, full ? null : this.dueStations(mono0));
   }
 
   /**
-   * One round: every station (or, for a retry, the stations whose read
-   * failed for a passing cause), one request at a time.
+   * One round: every station not backed off (or only the stations due: a
+   * retry, the added ones, a back-off ended), one request at a time.
    */
   async round(gen, only = null) {
     const config = this.config;
@@ -517,18 +552,22 @@ export class NdbcApp {
     if (!only) {
       this.lastAttemptMono = start;
       this.nextDueMono = start + config.refreshMinutes * MINUTE;
+      this.added = null;
     }
     const retryLevel = this.retry?.level ?? 0;
-    this.retry = null;
+    // A retry is spent by a full round or once its stations are read.
+    if (!only || (this.retry && this.retry.dueMono <= start)) this.retry = null;
     // The time of the attempt is in /data before the first request.
     this.persisted.lastAttemptAt = this.now();
     const saved = await this.persist();
     this.saveFailed = !saved && (this.storeStatus === 'ok' || this.storeStatus === 'absent');
     if (gen !== this.gen) return;
     const failed = new Set();
+    let read = 0;
+    let refused = null;
     for (const id of config.stations) {
       if (only && !only.has(id)) continue;
-      const back = this.missing.get(id);
+      const back = this.backoff.get(id);
       if (back && back.untilMono > this.monotonic()) continue;
       if (this.pausedFor() > 0) {
         this.recordFailure(id, { kind: 'paused' });
@@ -536,13 +575,27 @@ export class NdbcApp {
         continue;
       }
       const result = await this.readStation(id, gen);
+      if (result.kind !== 'paused' && result.kind !== 'stopped') read += 1;
       if (gen !== this.gen) {
         // The pause a refusal started (in request) is kept in /data all the same.
-        if (!result.ok && PAUSING.includes(result.kind)) await this.persist();
+        if (!result.ok && result.kind === 'rate') await this.persist();
+        // Refused for a passing cause: still due for the configuration now
+        // running (when it is running and still has this station).
+        if (
+          !result.ok &&
+          RETRIED.includes(result.kind) &&
+          this.cycleTimer &&
+          this.config?.stations.includes(id)
+        ) {
+          const mono = this.monotonic();
+          this.armRetry(new Set([id]), 0, mono);
+          this.scheduleCycle(this.leftBefore(mono), this.gen);
+        }
         return;
       }
       if (result.ok) {
-        this.missing.delete(id);
+        this.backoff.delete(id);
+        refused = false;
         // Success resets the pauses.
         this.pauseUntilMono = null;
         if (this.persisted.pause) this.persisted.pause = NO_PAUSE();
@@ -550,7 +603,13 @@ export class NdbcApp {
         await this.publishStation(id, gen);
         if (gen !== this.gen) return;
       } else {
-        if (result.kind === 'missing') this.startMissing(id);
+        if (BACKED_OFF.includes(result.kind)) this.startBackoff(id, result);
+        // Another cause ends the back-off: the retry or the next round reads it,
+        // a station never stays due without a request going.
+        else if (result.kind !== 'paused') this.backoff.delete(id);
+        if (['server', 'http'].includes(result.kind)) {
+          if (refused !== false) refused = result;
+        } else if (result.kind !== 'paused') refused = false;
         if (RETRIED.includes(result.kind)) failed.add(id);
         this.logger.warn(
           `Station ${id}: read failed (${result.kind}${result.status ? ` ${result.status}` : ''})`,
@@ -558,6 +617,9 @@ export class NdbcApp {
         this.recordFailure(id, result);
       }
     }
+    // Every station of a full round refused by a 5xx or another status: the
+    // server is down, every read pauses (one station alone backs off alone).
+    if (!only && read > 0 && refused) this.startPause(refused);
     // The next round is armed before /data and the status: neither a slow
     // save nor a slow Gladys holds it back.
     const mono = this.monotonic();
@@ -573,12 +635,17 @@ export class NdbcApp {
 
   /**
    * The stations whose read failed for a passing cause (network, timeout,
-   * 429, 5xx, pause) are read again before the next round: 2 min after,
+   * 429, pause) are read again before the next round: 2 min after,
    * doubled at each failed retry, never during a pause; dropped when the
    * next round comes first.
    */
   armRetry(failed, level, mono) {
     if (failed.size === 0) return;
+    // A retry still waiting (this was a back-off read) takes these stations too.
+    if (this.retry) {
+      for (const id of failed) this.retry.ids.add(id);
+      return;
+    }
     const next = Math.min(level + 1, 10);
     // During a pause (itself doubled), at its end; else 2 min doubled.
     const due =
@@ -619,10 +686,9 @@ export class NdbcApp {
       fetchImpl: this.fetchImpl,
       timers: this.timers,
     }).then((result) => {
-      // A refusal of the source pauses every read before the next request
-      // may go, even when the configuration changed or Gladys reconnected
-      // while this one was out.
-      if (!result.ok && PAUSING.includes(result.kind)) this.startPause(result);
+      // A 429 pauses every read before the next request may go, even when
+      // the configuration changed or Gladys reconnected while this one was out.
+      if (!result.ok && result.kind === 'rate') this.startPause(result);
       return result;
     });
     this.inflight = job.then(
@@ -763,12 +829,28 @@ export class NdbcApp {
     });
   }
 
-  startMissing(id) {
-    const back = this.missing.get(id) ?? { level: 0 };
+  /**
+   * One station backs off alone: no realtime file (404, 410) 1 h doubled up
+   * to a day; a 5xx or another status 2 min doubled up to 6 h, Retry-After
+   * honoured within that bound. On its own timer, never rounded to a round.
+   */
+  startBackoff(id, result) {
+    const before = this.backoff.get(id);
+    const back = { level: before?.kind === result.kind ? before.level : 0, kind: result.kind };
     back.level = Math.min(back.level + 1, 30);
-    const duration = Math.min(MISSING_MAX, MISSING_FIRST * 2 ** (back.level - 1));
+    let duration;
+    if (result.kind === 'missing') {
+      duration = Math.min(MISSING_MAX, MISSING_FIRST * 2 ** (back.level - 1));
+    } else {
+      duration = PAUSE_5XX_FIRST * 2 ** (back.level - 1);
+      if (Number.isFinite(result.retryAfter) && result.retryAfter > duration) {
+        duration = result.retryAfter;
+      }
+      duration = Math.min(PAUSE_MAX, duration);
+    }
+    back.status = Number.isInteger(result.status) ? result.status : null;
     back.untilMono = this.monotonic() + duration;
-    this.missing.set(id, back);
+    this.backoff.set(id, back);
   }
 
   startPause(result) {
@@ -846,15 +928,33 @@ export class NdbcApp {
       text.en += `; ${read.units.length} column(s) in an unexpected unit, not used`;
       text.fr += ` ; ${read.units.length} colonne(s) dans une unité inattendue, non utilisée(s)`;
     }
-    return { ...text, fresh: f.fresh > 0, staleAt: f.staleAt };
+    const short =
+      read.latest.newestAt === null
+        ? { en: 'no observation', fr: 'aucune observation' }
+        : f.count === 0
+          ? { en: 'all MM', fr: 'tout MM' }
+          : f.fresh === 0
+            ? { en: 'silent', fr: 'muette' }
+            : { en: `${f.fresh} value(s) < 2 h`, fr: `${f.fresh} valeur(s) < 2 h` };
+    return { ...text, short, fresh: f.fresh > 0, staleAt: f.staleAt };
   }
 
   composeStatus() {
     const config = this.config;
-    const lines = { en: [], fr: [] };
+    // The global lines first (pause, next read, configuration, /data): they
+    // stay whole; the station lines are shortened when all would not fit.
+    const head = { en: [], fr: [] };
+    const long = { en: [], fr: [] };
+    const short = { en: [], fr: [] };
     const push = (en, fr) => {
-      lines.en.push(en);
-      lines.fr.push(fr);
+      head.en.push(en);
+      head.fr.push(fr);
+    };
+    const station = (en, fr, shortEn, shortFr) => {
+      long.en.push(en);
+      long.fr.push(fr);
+      short.en.push(shortEn);
+      short.fr.push(shortFr);
     };
     if (!config) return { connected: false, message: M.starting, staleAt: null };
     const mono = this.monotonic();
@@ -874,7 +974,12 @@ export class NdbcApp {
     for (const id of config.stations) {
       const result = this.results.get(id);
       if (!result) {
-        push(`${id}: no read yet.`, `${id} : pas encore lue.`);
+        station(
+          `${id}: no read yet.`,
+          `${id} : pas encore lue.`,
+          `${id}: no read yet.`,
+          `${id} : pas encore lue.`,
+        );
         continue;
       }
       const ok = result.ok ? result : result.lastOk;
@@ -883,9 +988,11 @@ export class NdbcApp {
         staleAt = data.staleAt;
       if (result.ok) {
         if (data.fresh) anyFresh = true;
-        push(
+        station(
           `${id}: ${data.en}${data.fresh ? '' : '; nothing published'}.`,
           `${id} : ${data.fr}${data.fresh ? '' : ' ; rien publié'}.`,
+          `${id}: ${data.short.en}.`,
+          `${id} : ${data.short.fr}.`,
         );
         continue;
       }
@@ -897,8 +1004,8 @@ export class NdbcApp {
               en: failure(kind, result.failure.status, 'en'),
               fr: failure(kind, result.failure.status, 'fr'),
             };
-      const back = this.missing.get(id);
-      if (kind === 'missing' && back) {
+      const back = this.backoff.get(id);
+      if (BACKED_OFF.includes(kind) && back) {
         why.en += `, next try ${formatTime(toWall(back.untilMono), 'en')}`;
         why.fr += `, prochain essai ${formatTime(toWall(back.untilMono), 'fr')}`;
       }
@@ -908,7 +1015,16 @@ export class NdbcApp {
             fr: ` ; dernière lecture ${formatTime(ok.readAt, 'fr')} : ${data.fr} ; rien publié depuis`,
           }
         : { en: '; no data yet', fr: ' ; pas encore de données' };
-      push(`${id}: ${why.en}${since.en}.`, `${id} : ${why.fr}${since.fr}.`);
+      const reason = {
+        en: kind === 'paused' ? 'pause' : failure(kind, result.failure.status, 'en'),
+        fr: kind === 'paused' ? 'pause' : failure(kind, result.failure.status, 'fr'),
+      };
+      station(
+        `${id}: ${why.en}${since.en}.`,
+        `${id} : ${why.fr}${since.fr}.`,
+        `${id}: ${reason.en}.`,
+        `${id} : ${reason.fr}.`,
+      );
     }
     if (this.nextDueMono !== null) {
       const next = toWall(mono + this.leftBefore(mono));
@@ -937,8 +1053,7 @@ export class NdbcApp {
       );
     }
     const message = {};
-    for (const lang of LANGS)
-      message[lang] = [...lines[lang].join(' ')].slice(0, STATUS_MAX).join('');
+    for (const lang of LANGS) message[lang] = fitStatus(head[lang], long[lang], short[lang]);
     return { connected: anyFresh, message, staleAt };
   }
 
@@ -972,4 +1087,15 @@ export class NdbcApp {
       this.logger.warn(`Status not published (${err?.name ?? 'Error'})`);
     }
   }
+}
+
+/**
+ * The status text, at most `max` characters: the global lines whole, then
+ * the long station lines, or the short ones when the long would not fit.
+ */
+export function fitStatus(head, long, short, max = STATUS_MAX) {
+  const join = (parts) => parts.join(' ');
+  let text = join([...head, ...long]);
+  if ([...text].length > max) text = join([...head, ...short]);
+  return [...text].slice(0, max).join('');
 }

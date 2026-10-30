@@ -18,7 +18,12 @@ the notes of the version's GitHub Release.
   tide). A value is published once, only when its observation is under 2 hours
   old against the NDBC server time; missing values (`MM`) are never published.
 - One request at a time, 3 s apart, every 10 to 180 minutes; only the head of
-  each file (`Range`), `If-None-Match`; 429/5xx pauses kept in `/data`; a
-  station without realtime file is tried again after 1 h, doubled up to 24 h.
+  each file (`Range`), `If-None-Match`; a 429 pauses every read (kept in
+  `/data`), a 5xx or another status backs off its station alone; a
+  station without realtime file is tried again after 1 h, doubled up to 24 h;
+  stations added to the configuration are read alone.
+- Station ids of 4 or 5 characters (the Gulf of Mexico platforms: KATP...).
+- The age of an observation counts the `Age` of a cached answer; a wave
+  period of 0 s is missing.
 - Status per station (values under 2 h old, silent, every value missing, read
   failure), updated when a value turns 2 h old; "Show the last read" button.

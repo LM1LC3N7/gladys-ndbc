@@ -99,8 +99,8 @@ export function formatAge(ms) {
 const ERRORS = {
   required: { en: 'is required', fr: 'est obligatoire' },
   stations_invalid: {
-    en: 'holds an entry that is not a station id (5 letters or digits, as 46026): left out',
-    fr: "contient une entrée qui n'est pas un identifiant de station (5 lettres ou chiffres, comme 46026) : ignorée",
+    en: 'holds an entry that is not a station id (4 or 5 letters or digits, as 46026 or KATP): left out',
+    fr: "contient une entrée qui n'est pas un identifiant de station (4 ou 5 lettres ou chiffres, comme 46026 ou KATP) : ignorée",
   },
   stations_too_many: {
     en: 'holds more than 10 stations: the first 10 are read',

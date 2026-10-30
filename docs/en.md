@@ -5,8 +5,10 @@ Center** (NDBC, NOAA) in Gladys: waves, wind, water and air temperature, pressur
 coasts, the Great Lakes, the Gulf of Mexico, Hawaii, Alaska and the Pacific, and relays a few Canadian buoys
 (Environment and Climate Change Canada).
 
-The data comes from the public realtime files of the NDBC (no account, no key), US government data in the
-public domain. **This integration is not an official source, and not for navigation**: check the NDBC and
+The data comes from the public realtime files of the NDBC (no account, no key): US government data in the
+public domain (source: NOAA National Data Buoy Center), except the stations of partners that the NDBC relays,
+which keep their owner's terms (for example the buoys of Environment and Climate Change Canada, under the Open
+Government Licence – Canada; the owner is on the NDBC page of each station). **This integration is not an official source, and not for navigation**: check the NDBC and
 the official marine forecasts before going out on the water. It has never been tested on a real Gladys
 installation by its author; it was tested against the live NDBC files.
 
@@ -34,17 +36,20 @@ What is published, and when:
 - each feature gets the **newest value** of its column among the lines read (a buoy often reports the wind
   every 10 minutes and the waves every 30 or 60 minutes: each one has its own time);
 - a value is published **only if its observation is less than 2 hours old**, the age being taken against the
-  time of the NDBC server (its `Date` header), never against the clock of your Gladys;
+  time of the NDBC server (its `Date` header, plus its `Age` when the answer is a copy kept by the CDN), never
+  against the clock of your Gladys;
 - each observation is published **once**: the time of the last one published for each feature is kept in
   `/data`, so neither the next read, nor a restart, publishes it again; an older observation is never
   published after a newer one;
 - `MM` in a file means **missing**: nothing is published, never 0. A value outside the plausible range of its
-  variable (or a "9" fill value: 99, 999, 9999) is not a measure either;
-- a device created after a read gets right away the values of that read still under 2 hours old.
+  variable (or a "9" fill value: 99, 999, 9999), or a wave period of 0 s, is not a measure either;
+- a device created after a read gets right away the values of that read still under 2 hours old;
+- in the history of Gladys, a value is dated when it is published, not when it was observed (up to about an
+  hour later for an hourly station): the time of the observation is in the status.
 
 ## Configuration
 
-- **Station ids**: up to 10 ids of 5 letters or digits (as `46026`, `44025`, `PSBM1`), separated by commas.
+- **Station ids**: up to 10 ids of 4 or 5 letters or digits (as `46026`, `44025`, `PSBM1`, or `KATP` for an oil platform of the Gulf of Mexico), separated by commas.
   Find them on the NDBC map (https://www.ndbc.noaa.gov/). An entry that is not an id is left out and named in
   the status; past 10, the first 10 are read.
 - **Language of the names**: English or French, for the names proposed in Discovery.
@@ -61,17 +66,20 @@ After saving, open Discovery to create the devices.
   downloaded);
 - a round of reads starts every interval: a reconnection to Gladys, a saved but unchanged configuration,
   Discovery or the test button never read sooner, nor a restart while `/data` works (the time of the last
-  attempt is kept there; when `/data` cannot be read or written, a restart waits 10 minutes, see Limits). A
-  configuration that changes the list of stations reads them at most once a minute, and a failed read may be
-  retried sooner (below);
-- a 429 (too many requests) pauses every read 5 minutes, a 5xx 2 minutes, another unexpected answer 2
-  minutes, each doubled when it comes again, at most 6 hours, `Retry-After` honoured within that bound; the
-  pause is kept in `/data` and holds after a restart;
+  attempt is kept there; when `/data` cannot be read or written, a restart waits 10 minutes, see Limits). The
+  stations added to the list are read alone right away, at most once a minute (the others keep their turn),
+  and a failed read may be retried sooner (below);
+- a 429 (too many requests) pauses every read 5 minutes, doubled when it comes again, at most 6 hours,
+  `Retry-After` honoured within that bound; the pause is kept in `/data` and holds after a restart;
+- a 5xx or another unexpected answer on the file of one station backs that station off alone: read again
+  2 minutes later, then 4, 8... up to 6 hours (`Retry-After` honoured), while the other stations are read at
+  their pace. When every station read in a round answers so, every read also pauses 2 minutes (doubled, in
+  `/data`);
 - a station whose read failed for a passing cause (network, timeout, pause) is read again before the next
   round: at the end of the pause, else 2 minutes later, doubled at each new failure, as long as that comes
   before the next round;
-- a station without realtime file (404) is tried again after 1 hour, then 2, 4... up to 24 hours (the other
-  stations are read as usual).
+- a station without realtime file (404) is tried again 1 hour later, then 2, 4... up to 24 hours, on its own
+  timer (the other stations are read as usual).
 
 ## Status
 
@@ -88,6 +96,8 @@ Gladys shows the integration as connected only when the last read of at least on
   minutes after it was made, sometimes more. A station that sends nothing for 2 hours gets nothing published.
 - Some buoys are seasonal (Great Lakes buoys are taken out in winter): their file stops, the station turns
   "silent", then the file may disappear (404).
+- The station lines of the status are shortened when 10 stations would not fit in it (the global lines, next
+  read and `/data` warnings, always stay).
 - The age of an observation needs the time of the NDBC server: an answer without a readable `Date`, or one
   more than a day away from the clock of your Gladys, publishes nothing ("the server time cannot be read").
 - A column whose unit on the second header line is not the expected one (for example knots instead of m/s) is

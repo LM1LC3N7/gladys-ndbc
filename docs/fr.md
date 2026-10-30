@@ -5,8 +5,11 @@ Intégration non officielle : les observations des bouées et stations côtière
 des États-Unis, les Grands Lacs, le golfe du Mexique, Hawaï, l'Alaska et le Pacifique, et relaie quelques
 bouées canadiennes (Environnement et Changement climatique Canada).
 
-Les données viennent des fichiers temps réel publics du NDBC (sans compte ni clé), données du gouvernement
-américain, du domaine public. **Cette intégration n'est pas une source officielle, et pas pour la
+Les données viennent des fichiers temps réel publics du NDBC (sans compte ni clé) : données du gouvernement
+américain, du domaine public (source : NOAA National Data Buoy Center), sauf les stations de partenaires que le
+NDBC relaie, qui gardent les conditions de leur propriétaire (par exemple les bouées d'Environnement et
+Changement climatique Canada, sous la Licence du gouvernement ouvert – Canada ; le propriétaire figure sur la
+page NDBC de chaque station). **Cette intégration n'est pas une source officielle, et pas pour la
 navigation** : consultez le NDBC et les prévisions marines officielles avant de sortir en mer. Elle n'a jamais
 été testée sur une vraie installation Gladys par son auteur ; elle a été essayée contre les vrais fichiers du
 NDBC.
@@ -35,18 +38,22 @@ Ce qui est publié, et quand :
 - chaque fonction reçoit la **valeur la plus récente** de sa colonne parmi les lignes lues (une bouée envoie
   souvent le vent toutes les 10 minutes et les vagues toutes les 30 ou 60 minutes : chacune a sa propre heure) ;
 - une valeur n'est publiée **que si son observation a moins de 2 heures**, l'âge étant pris par rapport à
-  l'heure du serveur du NDBC (son en-tête `Date`), jamais par rapport à l'horloge de votre Gladys ;
+  l'heure du serveur du NDBC (son en-tête `Date`, plus son `Age` quand la réponse est une copie gardée par le
+  CDN), jamais par rapport à l'horloge de votre Gladys ;
 - chaque observation est publiée **une fois** : l'heure de la dernière publiée pour chaque fonction est gardée
   dans `/data`, si bien que ni la lecture suivante ni un redémarrage ne la republient ; une observation plus
   ancienne n'est jamais publiée après une plus récente ;
 - `MM` dans un fichier veut dire **manquant** : rien n'est publié, jamais 0. Une valeur hors de la plage
-  plausible de sa variable (ou une valeur de remplissage « 9 » : 99, 999, 9999) n'est pas une mesure non plus ;
+  plausible de sa variable (ou une valeur de remplissage « 9 » : 99, 999, 9999), ou une période de vagues de
+  0 s, n'est pas une mesure non plus ;
 - un appareil créé après une lecture reçoit tout de suite les valeurs de cette lecture qui ont encore moins
-  de 2 heures.
+  de 2 heures ;
+- dans l'historique de Gladys, une valeur est datée de sa publication, pas de son observation (jusqu'à environ
+  une heure plus tard pour une station horaire) : l'heure de l'observation est dans le statut.
 
 ## Configuration
 
-- **Identifiants des stations** : jusqu'à 10 identifiants de 5 lettres ou chiffres (comme `46026`, `44025`,
+- **Identifiants des stations** : jusqu'à 10 identifiants de 4 ou 5 lettres ou chiffres (comme `46026`, `44025`, `KATP`,
   `PSBM1`), séparés par des virgules. Trouvez-les sur la carte du NDBC (https://www.ndbc.noaa.gov/). Une entrée
   qui n'est pas un identifiant est ignorée et signalée dans le statut ; au-delà de 10, les 10 premières sont
   lues.
@@ -65,16 +72,20 @@ Après l'enregistrement, ouvrez la découverte pour créer les appareils.
 - une série de lectures commence à chaque intervalle : ni une reconnexion à Gladys, ni une configuration
   enregistrée sans changement, ni la découverte, ni le bouton de test ne lisent plus tôt, ni un redémarrage
   tant que `/data` fonctionne (l'heure de la dernière tentative y est gardée ; si `/data` ne peut être ni lu
-  ni écrit, un redémarrage attend 10 minutes, voir Limites). Une configuration qui change la liste des
-  stations les lit au plus une fois par minute, et une lecture en échec peut être refaite plus tôt (plus bas) ;
-- un 429 (trop de requêtes) met toutes les lectures en pause 5 minutes, un 5xx 2 minutes, une autre réponse
-  inattendue 2 minutes, chaque fois doublé s'il revient, 6 heures au plus, `Retry-After` respecté dans cette
-  limite ; la pause est gardée dans `/data` et tient après un redémarrage ;
+  ni écrit, un redémarrage attend 10 minutes, voir Limites). Les stations ajoutées à la liste sont lues seules
+  tout de suite, au plus une fois par minute (les autres gardent leur tour), et une lecture en échec peut être
+  refaite plus tôt (plus bas) ;
+- un 429 (trop de requêtes) met toutes les lectures en pause 5 minutes, doublé s'il revient, 6 heures au plus,
+  `Retry-After` respecté dans cette limite ; la pause est gardée dans `/data` et tient après un redémarrage ;
+- un 5xx ou une autre réponse inattendue sur le fichier d'une station met cette station seule en retrait :
+  relue 2 minutes plus tard, puis 4, 8… jusqu'à 6 heures (`Retry-After` respecté), pendant que les autres
+  stations sont lues à leur rythme. Quand toutes les stations lues d'une série répondent ainsi, toutes les
+  lectures sont aussi mises en pause 2 minutes (doublé, dans `/data`) ;
 - une station dont la lecture a échoué pour une cause passagère (réseau, délai, pause) est relue avant la
   série suivante : à la fin de la pause, sinon 2 minutes plus tard, doublé à chaque nouvel échec, tant que cela
   tombe avant la série suivante ;
-- une station sans fichier temps réel (404) est réessayée après 1 heure, puis 2, 4… jusqu'à 24 heures (les
-  autres stations sont lues normalement).
+- une station sans fichier temps réel (404) est réessayée 1 heure plus tard, puis 2, 4… jusqu'à 24 heures, sur
+  sa propre minuterie (les autres stations sont lues normalement).
 
 ## Statut
 
@@ -93,6 +104,8 @@ lecture » donne le même texte et ne lit jamais.
   de publié.
 - Certaines bouées sont saisonnières (les bouées des Grands Lacs sont retirées l'hiver) : leur fichier
   s'arrête, la station devient « muette », puis le fichier peut disparaître (404).
+- Les lignes des stations dans le statut sont raccourcies quand 10 stations n'y tiendraient pas (les lignes
+  générales, prochaine lecture et avertissements sur `/data`, restent toujours).
 - L'âge d'une observation demande l'heure du serveur du NDBC : une réponse sans `Date` lisible, ou à plus d'un
   jour de l'horloge de votre Gladys, ne publie rien (« l'heure du serveur est illisible »).
 - Une colonne dont l'unité sur la deuxième ligne d'en-tête n'est pas celle attendue (des nœuds au lieu de m/s

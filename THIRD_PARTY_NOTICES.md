@@ -5,13 +5,18 @@
 The integration reads, at run time, the realtime files of the National Data Buoy Center
 (https://www.ndbc.noaa.gov/data/realtime2/), a service of the National Oceanic and Atmospheric
 Administration. Information produced by the US federal government is in the public domain in the United
-States (17 U.S.C. 105); NOAA asks to be credited as the source. Some stations belong to partners (for example
-Environment and Climate Change Canada for some Great Lakes buoys) and are relayed by the NDBC.
+States (17 U.S.C. 105); NOAA asks to be credited as the source. Some stations belong to partners and are only
+relayed by the NDBC: their data keeps the terms of their owner (named on the NDBC page of each station).
 
-The test fixtures `test/fixtures/*.txt` are the first lines of four real files (46026, 44025, PSBM1, 45132)
-captured on 2026-10-30; they hold no personal data.
+The test fixtures `test/fixtures/*.txt` are the first lines of four real files captured on 2026-10-30; they hold
+no personal data. Three are NOAA stations (46026, 44025: NDBC buoys; PSBM1: NOS station). The fourth, 45132
+(Port Stanley, Lake Erie), is owned and maintained by Environment and Climate Change Canada: it is used under the
+Open Government Licence – Canada (https://open.canada.ca/en/open-government-licence-canada), with this
+attribution:
 
-Source of the data: NOAA National Data Buoy Center. The integration is not endorsed by NOAA.
+> Contains information licensed under the Open Government Licence – Canada.
+
+Source of the data: NOAA National Data Buoy Center. The integration is not endorsed by NOAA nor by Environment and Climate Change Canada.
 
 ## ndbc-api (reference, MIT)
 

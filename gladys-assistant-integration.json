@@ -21,8 +21,8 @@
         "fr": "Bouées de la NOAA (NDBC)"
       },
       "description": {
-        "en": "Observations of the buoys and coastal stations of the National Data Buoy Center (NOAA): US coasts, Great Lakes, Gulf of Mexico, Pacific, and a few Canadian buoys. Read from the public realtime files, no account, no key; US government data in the public domain. One device per station; a value is published only when the observation is less than 2 hours old. Not an official source, not for navigation.",
-        "fr": "Observations des bouées et stations côtières du National Data Buoy Center (NOAA) : côtes des États-Unis, Grands Lacs, golfe du Mexique, Pacifique, et quelques bouées canadiennes. Lues dans les fichiers temps réel publics, sans compte ni clé ; données du gouvernement américain, du domaine public. Un appareil par station ; une valeur n'est publiée que si l'observation a moins de 2 heures. Pas une source officielle, pas pour la navigation."
+        "en": "Observations of the buoys and coastal stations of the National Data Buoy Center (NOAA): US coasts, Great Lakes, Gulf of Mexico, Pacific, and a few Canadian buoys. Read from the public realtime files, no account, no key; US government data in the public domain, except the partner stations relayed by the NDBC, which keep their owner's terms (Environment and Climate Change Canada buoys: Open Government Licence – Canada). One device per station; a value is published only when the observation is less than 2 hours old. Not an official source, not for navigation.",
+        "fr": "Observations des bouées et stations côtières du National Data Buoy Center (NOAA) : côtes des États-Unis, Grands Lacs, golfe du Mexique, Pacifique, et quelques bouées canadiennes. Lues dans les fichiers temps réel publics, sans compte ni clé ; données du gouvernement américain, du domaine public, sauf les stations de partenaires relayées par le NDBC, qui gardent les conditions de leur propriétaire (bouées d'Environnement et Changement climatique Canada : Licence du gouvernement ouvert – Canada). Un appareil par station ; une valeur n'est publiée que si l'observation a moins de 2 heures. Pas une source officielle, pas pour la navigation."
       },
       "links": [
         {
@@ -49,8 +49,8 @@
         "fr": "Identifiants des stations"
       },
       "description": {
-        "en": "Up to 10 NDBC station ids (5 letters or digits, as on the NDBC map), separated by commas.",
-        "fr": "Jusqu'à 10 identifiants de stations NDBC (5 lettres ou chiffres, comme sur la carte du NDBC), séparés par des virgules."
+        "en": "Up to 10 NDBC station ids (4 or 5 letters or digits, as on the NDBC map: 46026, KATP), separated by commas.",
+        "fr": "Jusqu'à 10 identifiants de stations NDBC (4 ou 5 lettres ou chiffres, comme sur la carte du NDBC : 46026, KATP), séparés par des virgules."
       },
       "placeholder": {
         "en": "46026, 44025, PSBM1",
