@@ -1,61 +1,101 @@
-# Demo Devices Template
+# NDBC buoys (NOAA)
 
-This is the user documentation of the integration. Gladys re-hosts this file
-and shows a permanent **Documentation** link to it in the Configuration screen
-(in the user's language, with English as the fallback) — it is when
-configuring that the user needs it most. Keep the short onboarding hints in
-the `section` blocks of the manifest `config_schema`; put the long
-step-by-step (screenshots, troubleshooting…) here.
+Unofficial integration: the observations of the buoys and coastal stations of the **National Data Buoy
+Center** (NDBC, NOAA) in Gladys: waves, wind, water and air temperature, pressure. The NDBC covers the US
+coasts, the Great Lakes, the Gulf of Mexico, Hawaii, Alaska and the Pacific, and relays a few Canadian buoys
+(Environment and Climate Change Canada).
+
+The data comes from the public realtime files of the NDBC (no account, no key), US government data in the
+public domain. **This integration is not an official source, and not for navigation**: check the NDBC and
+the official marine forecasts before going out on the water. It has never been tested on a real Gladys
+installation by its author; it was tested against the live NDBC files.
 
 ## What you get
 
-Six demo devices show up after installation: a weather station (real data
-from Open-Meteo), a switch, a dimmable light, a smart plug with power
-metering, a motion sensor and a camera.
+One device per station, named "NDBC buoy 46026" (rename it as you like in Gladys). Every device has the same
+14 features; a variable the station does not measure never gets a value (a coastal C-MAN station has no
+waves, many buoys have no visibility nor tide):
+
+| Feature                                             | Column     | Unit                                            |
+| --------------------------------------------------- | ---------- | ----------------------------------------------- |
+| Wind direction (degrees, where the wind comes from) | WDIR       | 0 to 360 (no unit in Gladys)                    |
+| Wind speed, wind gust                               | WSPD, GST  | m/s                                             |
+| Significant wave height                             | WVHT       | m                                               |
+| Dominant wave period, average wave period           | DPD, APD   | s                                               |
+| Wave direction (degrees, where the waves come from) | MWD        | 0 to 360 (no unit in Gladys)                    |
+| Sea level pressure, pressure tendency over 3 h      | PRES, PTDY | hPa                                             |
+| Air temperature                                     | ATMP       | °C                                              |
+| Water temperature, dew point                        | WTMP, DEWP | °C (type "probe": kept out of the room average) |
+| Visibility                                          | VIS        | km (from nautical miles, 1 nmi = 1.852 km)      |
+| Water level (tide)                                  | TIDE       | m (from feet, 1 ft = 0.3048 m)                  |
+
+What is published, and when:
+
+- each feature gets the **newest value** of its column among the lines read (a buoy often reports the wind
+  every 10 minutes and the waves every 30 or 60 minutes: each one has its own time);
+- a value is published **only if its observation is less than 2 hours old**, the age being taken against the
+  time of the NDBC server (its `Date` header), never against the clock of your Gladys;
+- each observation is published **once**: the time of the last one published for each feature is kept in
+  `/data`, so neither the next read, nor a restart, publishes it again; an older observation is never
+  published after a newer one;
+- `MM` in a file means **missing**: nothing is published, never 0. A value outside the plausible range of its
+  variable (or a "9" fill value: 99, 999, 9999) is not a measure either;
+- a device created after a read gets right away the values of that read still under 2 hours old.
 
 ## Configuration
 
-1. Open the **Configuration** tab of the integration.
-2. Set the **latitude** and **longitude** the demo weather station should
-   observe (they default to Paris), and pick your temperature unit.
-   The **refresh interval** sets how often the weather station and the
-   plug's power are read: every 5 minutes by default, every minute at most.
-3. Save: the devices appear in the **Discovery** tab, ready to be added.
+- **Station ids**: up to 10 ids of 5 letters or digits (as `46026`, `44025`, `PSBM1`), separated by commas.
+  Find them on the NDBC map (https://www.ndbc.noaa.gov/). An entry that is not an id is left out and named in
+  the status; past 10, the first 10 are read.
+- **Language of the names**: English or French, for the names proposed in Discovery.
+- **Read interval**: from 10 to 180 minutes, 30 by default.
 
-The **Prefer the local connection** toggle drives the demo plug: it reports
-the channel it actually uses as a badge (local or cloud), with an orange dot
-when it runs degraded (local refused, cloud fallback).
+After saving, open Discovery to create the devices.
 
-## Actions
+## Pace and courtesy toward the NDBC
 
-- **Test the weather provider** — performs a live request to Open-Meteo and
-  shows the current temperature and humidity under the button.
-- **Identify a device** — pick one of your devices in the list and it will
-  signal itself (the demo light "blinks" in the logs).
+- one request at a time, 3 s at least between two, with a User-Agent naming the integration;
+- only the head of each file is asked for (`Range`, 16 KiB, about 15 hours of 10-minute lines): never the
+  whole file (up to 1 MB). A server that would ignore the range is cut there too;
+- `If-None-Match`: a file read in this run of the integration, unchanged since, answers 304 (nothing
+  downloaded);
+- a round of reads starts every interval: a reconnection to Gladys, a saved but unchanged configuration,
+  Discovery or the test button never read sooner, nor a restart while `/data` works (the time of the last
+  attempt is kept there; when `/data` cannot be read or written, a restart waits 10 minutes, see Limits). A
+  configuration that changes the list of stations reads them at most once a minute, and a failed read may be
+  retried sooner (below);
+- a 429 (too many requests) pauses every read 5 minutes, a 5xx 2 minutes, another unexpected answer 2
+  minutes, each doubled when it comes again, at most 6 hours, `Retry-After` honoured within that bound; the
+  pause is kept in `/data` and holds after a restart;
+- a station whose read failed for a passing cause (network, timeout, pause) is read again before the next
+  round: at the end of the pause, else 2 minutes later, doubled at each new failure, as long as that comes
+  before the next round;
+- a station without realtime file (404) is tried again after 1 hour, then 2, 4... up to 24 hours (the other
+  stations are read as usual).
 
-## Scenes
+## Status
 
-The integration adds its own cards to the scene editor (Gladys 5.1 or
-later), under the **Integrations** category:
+The configuration screen shows, for each station: how many values are under 2 hours old and the time of its
+newest observation (UTC); or "silent" when its newest value is older than 2 hours; or "every value missing
+(MM)"; or why the read failed (with the HTTP status) and what the last good read said, followed by "nothing
+published since". When a value turns 2 hours old the status is updated at once, even between two reads.
+Gladys shows the integration as connected only when the last read of at least one station gave a value under
+2 hours old. The "Show the last read" button gives the same text and never reads.
 
-- **Motion detected** (trigger) — starts the scene when a demo motion sensor
-  sees something move. Optionally pick the sensor and what moved (person,
-  animal); left empty, any detection matches. The following actions can
-  read what moved with `{{triggerEvent.data.target}}`.
-- **Identify a device** (action) — makes the chosen device signal itself.
-  It returns whether the device could signal itself, so the following
-  actions can depend on it.
+## Limits
 
-## Dashboard
-
-Add the **Demo status** widget to a dashboard: it shows the live
-temperature of the weather station and the power of the office plug, the
-connection the plug currently uses (orange when degraded) and the observed
-location. Its **Identify the light** button makes the demo light signal
-itself.
-
-## Troubleshooting
-
-The integration logs everything it does: check the integration logs from the
-Gladys UI (or `docker logs` on the host) with `LOG_LEVEL=debug` for the full
-detail.
+- The NDBC files are near real time, not real time: a buoy observation usually reaches the file 10 to 60
+  minutes after it was made, sometimes more. A station that sends nothing for 2 hours gets nothing published.
+- Some buoys are seasonal (Great Lakes buoys are taken out in winter): their file stops, the station turns
+  "silent", then the file may disappear (404).
+- The age of an observation needs the time of the NDBC server: an answer without a readable `Date`, or one
+  more than a day away from the clock of your Gladys, publishes nothing ("the server time cannot be read").
+- A column whose unit on the second header line is not the expected one (for example knots instead of m/s) is
+  never used, and the status says so.
+- If `/data` cannot be read (or does not answer within 2 s), it is left untouched and the integration runs
+  from memory: the first read waits 10 minutes after the start, and a restart may publish the newest
+  observations once more.
+- At most 250 values are published per minute: in the rare case of more (10 stations and a burst of device
+  creations), the rest is published at the next read if still under 2 hours old.
+- Only the standard meteorological file (`.txt`) is read: no spectral wave data, no currents, no DART
+  (tsunami) data, no ocean or water quality data.

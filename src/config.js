@@ -1,45 +1,77 @@
 // -----------------------------------------------------------------------------
-// Integration configuration.
-//
-// The configuration is filled in by the user in Gladys, from the `config_schema`
-// declared in `gladys-assistant-integration.json`. The SDK fetches it for you
-// (`gladys.getConfig()`) and notifies you of every change through
-// `gladys.onConfigUpdated()`.
-//
-// This module only provides defaults and normalizes the received object, so the
-// rest of the code never has to deal with `undefined`.
+// The configuration filled in by the user, read strictly: an empty field is
+// absent (never 0), a number is a plain integer, a station id is five letters
+// or digits (NDBC ids: `46026`, `PSBM1`), upper-cased as on the server. A
+// refused field is named, never echoed back.
 // -----------------------------------------------------------------------------
 
-// Defaults: they MUST stay consistent with the `default` values declared in the
-// `config_schema` of the manifest.
-export const DEFAULT_CONFIG = {
-  latitude: 48.8566, // Paris
-  longitude: 2.3522,
-  unit: 'celsius', // 'celsius' | 'fahrenheit'
-  // Seconds between two reads of the polled sensors. Gladys polls at most once
-  // a minute: slower intervals are applied by skipping polls (see
-  // createPoller in src/devices/index.js).
-  poll_frequency: 300,
-  // Reserved key (NOT in config_schema): because the manifest declares both
-  // 'local' and 'cloud' in its `transports` field, Gladys shows a standard
-  // "Prefer the local connection" toggle and sends the user's choice here.
-  // Read-only for the integration; defaults to true.
-  GLADYS_PREFER_LOCAL: true,
-};
+import { REFRESH_DEFAULT, REFRESH_MAX, REFRESH_MIN, STATIONS_MAX } from './constants.js';
+
+export const LANGUAGES = ['en', 'fr'];
+
+const isBlank = (value) =>
+  value === undefined || value === null || (typeof value === 'string' && value.trim() === '');
+
+/** An NDBC station id: five ASCII letters or digits. */
+export const STATION_ID = /^[A-Z0-9]{5}$/;
 
 /**
- * Merge the user config with the defaults.
- * @param {Record<string, unknown>} raw config returned by the SDK
+ * The station ids: comma, semicolon or space separated, unique. A part that
+ * is not an id is left out (and named as an error); past STATIONS_MAX, the
+ * first ones are kept.
  */
-export function normalizeConfig(raw = {}) {
-  return {
-    ...DEFAULT_CONFIG,
-    ...raw,
-    // Force the types: config may arrive as strings from a form.
-    latitude: Number(raw.latitude ?? DEFAULT_CONFIG.latitude),
-    longitude: Number(raw.longitude ?? DEFAULT_CONFIG.longitude),
-    poll_frequency: Number(raw.poll_frequency ?? DEFAULT_CONFIG.poll_frequency),
-    // The preference is a boolean; anything but an explicit false means true.
-    GLADYS_PREFER_LOCAL: raw.GLADYS_PREFER_LOCAL !== false,
-  };
+export function readStations(value) {
+  if (isBlank(value)) return { stations: [], errors: ['required'] };
+  if (typeof value !== 'string' || value.length > 500)
+    return { stations: [], errors: ['stations_invalid'] };
+  const stations = [];
+  const errors = [];
+  for (const part of value.split(/[\s,;]+/)) {
+    if (part === '') continue;
+    const id = part.toUpperCase();
+    if (!STATION_ID.test(id)) {
+      if (!errors.includes('stations_invalid')) errors.push('stations_invalid');
+      continue;
+    }
+    if (!stations.includes(id)) stations.push(id);
+  }
+  if (stations.length > STATIONS_MAX) {
+    errors.push('stations_too_many');
+    stations.length = STATIONS_MAX;
+  }
+  if (stations.length === 0 && errors.length === 0) errors.push('required');
+  return { stations, errors };
+}
+
+/** The read interval: a plain integer number of minutes, else NaN; blank is null. */
+export function readMinutes(value) {
+  if (isBlank(value)) return null;
+  if (typeof value === 'number') return Number.isInteger(value) ? value : NaN;
+  if (typeof value !== 'string') return NaN;
+  const text = value.trim();
+  return /^\d{1,4}$/.test(text) ? Number(text) : NaN;
+}
+
+/**
+ * The configuration the app runs with. `stations` holds the valid ids only;
+ * `errors` names each refused field (never its value).
+ */
+export function normalizeConfig(raw) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const errors = [];
+  const language = LANGUAGES.includes(source.language) ? source.language : 'en';
+  let refreshMinutes = readMinutes(source.refresh_minutes);
+  if (refreshMinutes === null) refreshMinutes = REFRESH_DEFAULT;
+  if (
+    Number.isNaN(refreshMinutes) ||
+    refreshMinutes < REFRESH_MIN ||
+    refreshMinutes > REFRESH_MAX
+  ) {
+    errors.push({ field: 'refresh_minutes', code: 'refresh' });
+    refreshMinutes = REFRESH_DEFAULT;
+  }
+  const read = readStations(source.stations);
+  for (const code of read.errors) errors.push({ field: 'stations', code });
+  const { stations } = read;
+  return { language, refreshMinutes, stations, errors };
 }

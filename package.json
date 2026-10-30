@@ -1,8 +1,8 @@
 {
-  "name": "gladys-integration-template-js",
-  "version": "1.0.0",
+  "name": "gladys-ndbc",
+  "version": "0.1.0",
   "private": true,
-  "description": "Official starter template to build an external integration for Gladys Assistant with the JavaScript SDK.",
+  "description": "Unofficial NDBC integration for Gladys Assistant: NOAA buoys and coastal stations (waves, wind, water and air temperature, pressure) from the public realtime files of the National Data Buoy Center.",
   "type": "module",
   "main": "index.js",
   "scripts": {
@@ -10,10 +10,15 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "node --test"
+    "test": "node --test --test-timeout=60000",
+    "audit": "npm audit --omit=dev"
   },
   "engines": {
     "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LM1LC3N7/gladys-ndbc.git"
   },
   "dependencies": {
     "@gladysassistant/integration-sdk": "^0.16.0"
