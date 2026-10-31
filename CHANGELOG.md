@@ -21,9 +21,10 @@ the notes of the version's GitHub Release.
   each file (`Range`), `If-None-Match`; a 429 pauses every read (kept in
   `/data`), a 5xx or another status backs off its station alone; a
   station without realtime file is tried again after 1 h, doubled up to 24 h;
-  stations added to the configuration are read alone; the stations a round
-  interrupted by a saved configuration or a reconnection did not read are
-  read right after.
+  stations added to the configuration are read alone; a round interrupted by
+  a saved configuration or a reconnection keeps the answer of the request
+  that went (shown at once in the status, counted as the read of that
+  station) and reads the stations it had not read right after.
 - Station ids of 4 or 5 characters (the Gulf of Mexico platforms: KATP...).
 - The age of an observation counts the `Age` of a cached answer; a wave
   period of 0 s is missing.

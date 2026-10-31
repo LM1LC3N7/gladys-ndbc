@@ -78,8 +78,9 @@ After saving, open Discovery to create the devices.
 - a station whose read failed for a passing cause (network, timeout, pause) is read again before the next
   round: at the end of the pause, else 2 minutes later, doubled at each new failure, as long as that comes
   before the next round;
-- a round interrupted by a saved configuration or a reconnection keeps the answer of the request that went;
-  the stations it had not read yet are read right after, not at the next interval;
+- a round interrupted by a saved configuration or a reconnection keeps the answer of the request that went
+  (shown at once in the status, it counts as the read of that station); the stations it had not read yet are
+  read right after, not at the next interval;
 - a station without realtime file (404) is tried again 1 hour later, then 2, 4... up to 24 hours, on its own
   timer (the other stations are read as usual).
 

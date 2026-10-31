@@ -54,7 +54,13 @@
   576 s, 304 included); `Age` whole seconds, at most a day. A Retry-After date stays relative to Date.
 - **Interrupted round** (review r2): a configuration saved or a reconnection in the middle of a round keeps the
   answer of the request that went (unless stopped) and leaves the stations not read yet due at once for the next
-  start; a full round clears them. A copy without `Age` stays undetectable (said in the docs).
+  start; a full round clears them. A copy without `Age` stays undetectable (said in the docs). Review r3: the
+  status is composed again right after a kept answer (late values, 429, back-off), once the next round is armed;
+  the station whose request is still out is never due again before its answer (`dueStations` and `leftBefore`
+  skip it, so neither a second request nor an empty round in a loop), a station whose request goes is no longer
+  "unread" (a full round that started before the late answer does not read it twice), and a kept answer that
+  fails otherwise than 404/5xx/other status ends the back-off of its station, as in a round. Tested with answers
+  still in flight when the configuration is saved (`test/app.test.js`, scenarios s14/s15 of the review).
 - **Wave periods** (DPD, APD) of 0 s are "not available" (partner buoys send `DPD 0` with a wave height).
 - **History**: values are published without `created_at` (a recent value must reach the scenes): Gladys dates
   them at publication, up to about an hour after the observation for hourly stations; said in the docs.
@@ -73,10 +79,16 @@
   file was removed just before; `wx` only matters for a race in between); the pause check of the round loop
   (the same check in `request` answers `paused`, handled the same way); the generation check right after
   `load()` (the one after `publishDevices` returns before anything else is done); the coalescing of `start`
-  (an older start that still runs stops at its next generation check). The clamp of a retry to the end of a pause (the next read waits for the end of
-  the pause anyway); `read > 0` vs `read >= 0` and counting paused or stopped reads (`refused` is only set after a
-  read went). The other guard mutants are killed by
-  the tests (runners kept outside the repository).
+  (an older start that still runs stops at its next generation check); the clamp of a retry to the end of a pause
+  (the next read waits for the end of the pause anyway); `read > 0` vs `read >= 0` and counting paused or stopped
+  reads (`refused` is only set after a read went); `pauseUntilMono` reset by a success, in a round and in
+  `keepLate` (one request at a time: a success never arrives during a pause, the pause is already over); a
+  removed station left in the unread list by `applyConfig` (the round only reads configured stations: at most one
+  empty round); the unread list cleared at the start of a full round (each station read leaves it; one backed off
+  would only start one more round that skips it).
+- **Mutation check**: `memcap node .github/scripts/mutants.mjs [name]` breaks each guard of `src/` in a throwaway
+  copy (one at a time) and runs the tests: 153 mutants on 2026-10-31: 142 killed, 11 equivalent (above,
+  each marked in the list with its reason). A pattern no longer found is an error: update it with the code.
 - **Checked live on 2026-10-30**: the client and the parser against the real files of 46026, 45132, PSBM1,
   44025, 51201 and a missing id (404), then the 304; the whole app against them (fake Gladys); then installed in
   the sandbox Gladys (`gi install`, RUNNING) with 46026 and 45132: status, Discovery (14 features each), test

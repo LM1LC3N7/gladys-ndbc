@@ -112,6 +112,8 @@ export class NdbcApp {
 
     this.lastRequestMono = -Infinity;
     this.inflight = null;
+    /** The station whose request is out: never due again before its answer decides. */
+    this.inflightId = null;
     this.pauseUntilMono = null;
     this.nextDueMono = null;
     /** Stations read again before the next round: `{ ids, dueMono, level }`. */
@@ -518,7 +520,11 @@ export class NdbcApp {
     if (this.retry) next = Math.min(next, this.retry.dueMono - mono);
     if (this.added) next = Math.min(next, this.added.dueMono - mono);
     if (this.unread.size > 0) next = Math.min(next, 0);
-    for (const back of this.backoff.values()) next = Math.min(next, back.untilMono - mono);
+    for (const [id, back] of this.backoff) {
+      // The back-off read still out (a round interrupted meanwhile) is not due
+      // again: its answer, kept late, ends or restarts the back-off.
+      if (id !== this.inflightId) next = Math.min(next, back.untilMono - mono);
+    }
     return Math.max(this.pausedFor(mono), next);
   }
 
@@ -534,6 +540,9 @@ export class NdbcApp {
     for (const [id, back] of this.backoff) if (back.untilMono <= mono) ids.add(id);
     for (const id of this.unread) ids.add(id);
     this.unread.clear();
+    // The station whose request is still out is never asked twice: the round
+    // that sent it keeps its answer for the configuration now running.
+    ids.delete(this.inflightId);
     return ids;
   }
 
@@ -595,8 +604,12 @@ export class NdbcApp {
         // stations not read yet stay due and are read soon, not at the
         // next interval.
         const sent = result.kind !== 'paused' && result.kind !== 'stopped';
+        const current = this.gen;
         const kept = sent && (await this.keepLate(id, result));
         this.leaveUnread(ids.slice(kept ? index + 1 : index));
+        // The status tells the kept answer at once (values, 429, back-off),
+        // once the next round is armed: a slow Gladys never holds it back.
+        if (kept) await this.updateStatus(current);
         return;
       }
       if (result.ok) {
@@ -670,6 +683,9 @@ export class NdbcApp {
     if (result.kind === 'rate') await this.persist();
     if (BACKED_OFF.includes(result.kind)) this.startBackoff(id, result);
     else if (RETRIED.includes(result.kind)) this.armRetry(new Set([id]), 0, this.monotonic());
+    // Another cause ends the back-off, as in a round: the retry or the next
+    // round reads the station, never at once.
+    if (!BACKED_OFF.includes(result.kind)) this.backoff.delete(id);
     this.recordFailure(id, result);
     return true;
   }
@@ -704,8 +720,9 @@ export class NdbcApp {
   /**
    * One request, when its turn comes: after the one in flight, REQUEST_GAP
    * after the start of the previous one. `null` when stopped meanwhile.
+   * `id` is the station asked, known as in flight until the answer.
    */
-  async request(url, etag, gen) {
+  async request(url, etag, gen, id = null) {
     for (;;) {
       if (gen !== this.gen) return null;
       if (this.inflight) {
@@ -722,6 +739,10 @@ export class NdbcApp {
     // A pause started meanwhile (a late 429 of an older round) holds this one.
     if (this.pausedFor() > 0) return { ok: false, kind: 'paused' };
     this.lastRequestMono = this.monotonic();
+    // The station asked is in flight, and read: no longer left unread (a
+    // full round that started before an interrupted answer never reads it twice).
+    this.inflightId = id;
+    this.unread.delete(id);
     const job = getStationHead(url, {
       etag,
       fetchImpl: this.fetchImpl,
@@ -740,6 +761,7 @@ export class NdbcApp {
       return await job;
     } finally {
       this.inflight = null;
+      this.inflightId = null;
     }
   }
 
@@ -751,7 +773,7 @@ export class NdbcApp {
     const before = this.results.get(id);
     const last = before?.ok ? before : before?.lastOk;
     // If-None-Match only for a file whose rows are in memory.
-    const answer = await this.request(stationUrl(id, this.dataBase), last?.etag ?? null, gen);
+    const answer = await this.request(stationUrl(id, this.dataBase), last?.etag ?? null, gen, id);
     if (answer === null) return { ok: false, kind: 'stopped' };
     if (!answer.ok) return answer;
     const serverDate = this.believableDate(answer.serverDate);

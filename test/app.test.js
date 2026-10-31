@@ -1258,3 +1258,352 @@ test('a success arriving after a configuration save still resets the pause level
   assert.equal(s.app.persisted.pause.level429, 1);
   assert.ok(Math.abs(s.app.pausedFor() - 5 * MINUTE) < 15 * SECOND);
 });
+
+// --- Answers still in flight when a round is interrupted (review r3) ---------
+// The request is out when the configuration is saved: its answer comes only
+// after `s.app.start(config)` (keepLate), as in the scenarios s14 and s15.
+
+/**
+ * NDBC holding back the `nth` request of station `id` until `gate.release()`,
+ * which then answers `late(url, api, call)`; any other request `others(...)`.
+ */
+function holdNth(id, nth, late, others = defaultWorld) {
+  const gate = { release: null, count: 0 };
+  gate.api = createApi((url, api, call) => {
+    if (call.id === id && ++gate.count === nth) {
+      return new Promise((resolve) => {
+        gate.release = () => resolve(late(url, api, call));
+      });
+    }
+    return others(url, api, call);
+  });
+  return gate;
+}
+
+const asked = (s) => s.api.calls.map((c) => c.id);
+const statesOf = (s, id) =>
+  s.fake.states.filter((x) => x.device_feature_external_id.startsWith(F(id, '')));
+
+test('a success answering after a configuration save is kept: published, never asked again, status at once', async () => {
+  const config = { stations: '46026, 45132', refresh_minutes: 30 };
+  const gate = holdNth('46026', 1, defaultWorld);
+  const s = await setup({ config, api: gate.api });
+  await s.begin();
+  assert.deepEqual(asked(s), ['46026'], 'the first request is out');
+  s.app.start(config);
+  await s.flush();
+  assert.match(statusEn(s.fake), /46026: no read yet/);
+  gate.release();
+  await s.flush();
+  // Kept for the configuration now running: stored, published, and told at once.
+  assert.deepEqual(published(s.fake, F('46026', 'wind-speed')), [3]);
+  assert.equal(s.fake.connectionStatus.connected, true);
+  assert.match(statusEn(s.fake), /46026: \d+ value\(s\) under 2 h old/);
+  assert.equal(asked(s).length, 1, 'the next station waits for its 3 s');
+  // The station left unread is read at once (3 s later), the kept one never again.
+  await s.wait(MINUTE);
+  assert.deepEqual(asked(s), ['46026', '45132']);
+  assert.ok(s.api.calls[1].at - s.api.calls[0].at < 4 * SECOND);
+  // The next full round at the interval, from the start of the interrupted one.
+  await s.wait(28 * MINUTE);
+  assert.equal(asked(s).length, 2);
+  await s.wait(2 * MINUTE);
+  assert.deepEqual(asked(s), ['46026', '45132', '46026', '45132']);
+});
+
+test('a station removed while its request is in flight: its late answer is dropped, never published', async () => {
+  const gate = holdNth('46026', 1, defaultWorld);
+  const s = await setup({ config: TWO, api: gate.api });
+  await s.begin();
+  s.app.start({ stations: '45132' });
+  await s.flush();
+  gate.release();
+  await s.flush();
+  await s.wait(MINUTE);
+  assert.deepEqual(statesOf(s, '46026'), []);
+  assert.equal(s.app.results.has('46026'), false);
+  assert.doesNotMatch(statusEn(s.fake), /46026/);
+  // The station still configured is read at once.
+  assert.deepEqual(asked(s), ['46026', '45132']);
+  assert.ok(statesOf(s, '45132').length > 0);
+});
+
+test('a 503 answering after a configuration save backs that station off 2 min; the status says it at once', async () => {
+  const config = { stations: '46026, 45132', refresh_minutes: 30 };
+  const gate = holdNth('46026', 1, (url, api) => status(503, api.clock.wall()));
+  const s = await setup({ config, api: gate.api });
+  await s.begin();
+  s.app.start(config);
+  await s.flush();
+  gate.release();
+  await s.flush();
+  assert.match(statusEn(s.fake), /46026: NDBC server error \(503\), next try/);
+  await s.wait(110 * SECOND);
+  assert.deepEqual(asked(s), ['46026', '45132']);
+  // Read again at the end of its own back-off; one station alone never pauses every read.
+  await s.wait(20 * SECOND);
+  assert.deepEqual(asked(s), ['46026', '45132', '46026']);
+  assert.ok(Math.abs(s.api.calls[2].at - s.api.calls[0].at - 2 * MINUTE) < 2 * SECOND);
+  assert.equal(s.app.pausedFor(), 0);
+});
+
+test('a network failure answering after a configuration save is retried at 2 min, not at once', async () => {
+  const config = { stations: '46026, 45132', refresh_minutes: 30 };
+  const gate = holdNth('46026', 1, () => 'network');
+  const s = await setup({ config, api: gate.api });
+  await s.begin();
+  s.app.start(config);
+  await s.flush();
+  gate.release();
+  await s.flush();
+  assert.match(statusEn(s.fake), /46026: NDBC unreachable/);
+  await s.wait(110 * SECOND);
+  assert.deepEqual(asked(s), ['46026', '45132']);
+  await s.wait(20 * SECOND);
+  assert.deepEqual(asked(s), ['46026', '45132', '46026']);
+  assert.ok(Math.abs(s.api.calls[2].at - s.api.calls[0].at - 2 * MINUTE) < 2 * SECOND);
+});
+
+test('a 429 answering after a configuration save pauses every read at once; the unread stations follow the pause', async () => {
+  const config = { stations: '46026, 45132, PSBM1', refresh_minutes: 30 };
+  const gate = holdNth('46026', 1, (url, api) => status(429, api.clock.wall()));
+  const s = await setup({ config, api: gate.api });
+  await s.begin();
+  s.app.start(config);
+  await s.flush();
+  assert.doesNotMatch(statusEn(s.fake), /paused until/);
+  gate.release();
+  await s.flush();
+  assert.match(statusEn(s.fake), /NDBC asked to slow down \(429\): reads paused until/);
+  assert.ok(s.store.data.pause.until > s.clock.wall(), 'the pause is in /data');
+  // Nothing during the 5 min pause, then each station once: the retry, the unread ones.
+  await s.wait(4 * MINUTE + 50 * SECOND);
+  assert.deepEqual(asked(s), ['46026']);
+  await s.wait(MINUTE);
+  assert.deepEqual(asked(s), ['46026', '46026', '45132', 'PSBM1']);
+  assert.ok(s.api.calls[1].at - s.api.calls[0].at >= 5 * MINUTE);
+});
+
+test('a configuration saved while a round waits for its /data save at the start: every station read once, at once', async () => {
+  const ids = ['46026', '45132', 'PSBM1', '44025'];
+  const config = { stations: ids.join(','), refresh_minutes: 30 };
+  const s = await setup({ config });
+  // The configuration applied (its /data check saved), its round armed, not started.
+  await s.app.start(config);
+  let release;
+  s.store.hold = new Promise((resolve) => (release = resolve));
+  await s.flush();
+  assert.equal(asked(s).length, 0, 'the round waits for the save of its start');
+  s.app.start(config);
+  await s.flush();
+  release();
+  await s.flush();
+  await s.wait(20 * SECOND);
+  assert.deepEqual(asked(s), ids);
+  // The next full round at the interval, not sooner.
+  await s.wait(29 * MINUTE);
+  assert.equal(asked(s).length, 4);
+  await s.wait(MINUTE);
+  assert.equal(asked(s).length, 8);
+});
+
+test('a configuration saved while a station is being published: the stations after it are read once, at once', async () => {
+  const ids = ['46026', '45132', 'PSBM1', '44025'];
+  const config = { stations: ids.join(','), refresh_minutes: 30 };
+  const s = await setup({ config });
+  const publish = s.gladys.publishStates.bind(s.gladys);
+  let release;
+  // The first publication is slow: the configuration is saved meanwhile.
+  s.gladys.publishStates = (states) => {
+    s.gladys.publishStates = publish;
+    return new Promise((resolve) => {
+      release = () => resolve(publish(states));
+    });
+  };
+  await s.begin();
+  assert.deepEqual(asked(s), ['46026']);
+  assert.equal(s.fake.states.length, 0);
+  s.app.start(config);
+  await s.flush();
+  release();
+  await s.flush();
+  await s.wait(20 * SECOND);
+  assert.deepEqual(asked(s), ids);
+  assert.deepEqual(published(s.fake, F('46026', 'wind-speed')), [3]);
+});
+
+test('a back-off read in flight when the configuration is saved is never asked twice', async () => {
+  for (const late of ['success', 'network']) {
+    let n = 0;
+    let release;
+    const s = await setup({
+      config: { ...TWO, refresh_minutes: 30 },
+      api: createApi((url, api, call) => {
+        if (call.id !== '45132') return defaultWorld(url, api, call);
+        n += 1;
+        if (n === 1) return status(503, api.clock.wall());
+        if (n === 2) {
+          return new Promise((resolve) => {
+            release = () => resolve(late === 'network' ? 'network' : defaultWorld(url, api, call));
+          });
+        }
+        return defaultWorld(url, api, call);
+      }),
+    });
+    await s.begin();
+    // 45132: 503 at 3 s, read again at the end of its back-off (2 min), the answer still out.
+    await s.wait(2 * MINUTE + 5 * SECOND);
+    assert.deepEqual(asked(s), ['46026', '45132', '45132'], late);
+    s.app.start({ ...TWO, refresh_minutes: 30 });
+    await s.flush();
+    // Its ended back-off does not make it due while its request is out (no round, no loop).
+    assert.ok(s.app.leftBefore(s.clock.monotonic()) > 20 * MINUTE, late);
+    const saves = s.store.saves;
+    release();
+    await s.flush();
+    assert.ok(s.store.saves - saves <= 2, `${late}: ${s.store.saves - saves} saves`);
+    assert.equal(s.app.backoff.has('45132'), false, late);
+    await s.wait(100 * SECOND);
+    assert.deepEqual(asked(s), ['46026', '45132', '45132'], late);
+    if (late === 'success') {
+      assert.ok(statesOf(s, '45132').length > 0);
+      assert.match(statusEn(s.fake), /45132: \d+ value\(s\) under 2 h old/);
+    } else {
+      // A network failure is retried 2 min after its answer, never at once.
+      await s.wait(30 * SECOND);
+      assert.deepEqual(asked(s), ['46026', '45132', '45132', '45132'], late);
+    }
+  }
+});
+
+test('a full round due at the save while a retry round is out: the stations it left are read once', async () => {
+  let down = true;
+  let hold = false;
+  let release;
+  const config = { stations: '46026, 45132, PSBM1', refresh_minutes: 30 };
+  const s = await setup({
+    config,
+    api: createApi((url, api, call) => {
+      if (call.id === '46026') return defaultWorld(url, api, call);
+      if (hold && call.id === '45132') {
+        hold = false;
+        return new Promise((resolve) => {
+          release = () => resolve(defaultWorld(url, api, call));
+        });
+      }
+      return down ? 'network' : defaultWorld(url, api, call);
+    }),
+  });
+  await s.begin();
+  // 45132 and PSBM1 unreachable: retried at 2, 6 and 14 min; the third retry is out.
+  await s.wait(13 * MINUTE);
+  hold = true;
+  down = false;
+  await s.wait(2 * MINUTE);
+  assert.equal(asked(s).at(-1), '45132');
+  const n = s.api.calls.length;
+  // A shorter interval: the full round is due at once and starts before the late answer.
+  s.app.start({ ...config, refresh_minutes: 10 });
+  await s.flush();
+  release();
+  await s.flush();
+  await s.wait(MINUTE);
+  // PSBM1, left unread by the retry round, is read by the full round only.
+  assert.deepEqual(asked(s).slice(n), ['46026', '45132', 'PSBM1']);
+});
+
+test('a stop while a late answer is being published: no status sent after the stop', async () => {
+  const config = { stations: '46026, 45132', refresh_minutes: 30 };
+  const gate = holdNth('46026', 1, defaultWorld);
+  const s = await setup({ config, api: gate.api });
+  await s.begin();
+  s.app.start(config);
+  await s.flush();
+  const publish = s.gladys.publishStates.bind(s.gladys);
+  let finish;
+  s.gladys.publishStates = (states) =>
+    new Promise((resolve) => {
+      finish = () => resolve(publish(states));
+    });
+  gate.release();
+  await s.flush();
+  assert.equal(typeof finish, 'function', 'the late answer is being published');
+  await s.app.disconnected();
+  const after = JSON.stringify(s.fake.connectionStatus);
+  finish();
+  await s.flush();
+  await s.wait(MINUTE);
+  assert.equal(JSON.stringify(s.fake.connectionStatus), after);
+  assert.deepEqual(asked(s), ['46026']);
+});
+
+test('a station whose request is out is not asked twice when another back-off ends meanwhile', async () => {
+  let n = 0;
+  let release;
+  const s = await setup({
+    config: { stations: '46026, 45132, PSBM1', refresh_minutes: 30 },
+    api: createApi((url, api, call) => {
+      if (call.id === '46026') return defaultWorld(url, api, call);
+      if (call.id === 'PSBM1') {
+        return asked(s).filter((id) => id === 'PSBM1').length === 1
+          ? status(503, api.clock.wall())
+          : defaultWorld(url, api, call);
+      }
+      n += 1;
+      if (n === 1) return status(503, api.clock.wall());
+      if (n === 2) {
+        return new Promise((resolve) => {
+          release = () => resolve(defaultWorld(url, api, call));
+        });
+      }
+      return defaultWorld(url, api, call);
+    }),
+  });
+  await s.begin();
+  // 45132 (503 at 3 s) and PSBM1 (503 at 6 s) back off 2 min; 45132 read again at 123 s, still out.
+  await s.wait(2 * MINUTE + 4 * SECOND);
+  assert.deepEqual(asked(s), ['46026', '45132', 'PSBM1', '45132']);
+  s.app.start({ stations: '46026, 45132, PSBM1', refresh_minutes: 30 });
+  await s.flush();
+  // PSBM1 comes due at 126 s: its round waits for the request out, and never takes 45132 again.
+  await s.wait(4 * SECOND);
+  release();
+  await s.flush();
+  await s.wait(MINUTE);
+  assert.deepEqual(asked(s), ['46026', '45132', 'PSBM1', '45132', 'PSBM1']);
+});
+
+test('a station left unread while it is backed off: read at the end of its back-off, no round in a loop', async () => {
+  let held = false;
+  let release;
+  const s = await setup({
+    config: { ...TWO, refresh_minutes: 30 },
+    api: createApi((url, api, call) => {
+      if (call.id === '45132') return status(404, api.clock.wall());
+      if (held) {
+        held = false;
+        return new Promise((resolve) => {
+          release = () => resolve(defaultWorld(url, api, call));
+        });
+      }
+      return defaultWorld(url, api, call);
+    }),
+  });
+  await s.begin();
+  // 45132 has no file: backed off 1 h. The round of 30 min is interrupted while 46026 is out.
+  await s.wait(29 * MINUTE);
+  held = true;
+  await s.wait(MINUTE + SECOND);
+  assert.deepEqual(asked(s), ['46026', '45132', '46026']);
+  s.app.start({ ...TWO, refresh_minutes: 30 });
+  await s.flush();
+  release();
+  await s.flush();
+  const saves = s.store.saves;
+  await s.wait(MINUTE);
+  assert.ok(s.store.saves - saves <= 4, `${s.store.saves - saves} saves in a minute`);
+  assert.deepEqual(asked(s), ['46026', '45132', '46026']);
+  // Its back-off ends at 1 h, with the next full round: read then, once.
+  await s.wait(30 * MINUTE);
+  assert.deepEqual(asked(s).slice(3), ['46026', '45132']);
+});

@@ -85,7 +85,8 @@ Après l'enregistrement, ouvrez la découverte pour créer les appareils.
   série suivante : à la fin de la pause, sinon 2 minutes plus tard, doublé à chaque nouvel échec, tant que cela
   tombe avant la série suivante ;
 - une série interrompue par une configuration enregistrée ou une reconnexion garde la réponse de la requête
-  partie ; les stations qu'elle n'avait pas encore lues sont lues juste après, pas à l'intervalle suivant ;
+  partie (montrée aussitôt dans le statut, elle compte comme la lecture de cette station) ; les stations
+  qu'elle n'avait pas encore lues sont lues juste après, pas à l'intervalle suivant ;
 - une station sans fichier temps réel (404) est réessayée 1 heure plus tard, puis 2, 4… jusqu'à 24 heures, sur
   sa propre minuterie (les autres stations sont lues normalement).
 

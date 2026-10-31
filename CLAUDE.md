@@ -44,6 +44,7 @@ docs/en.md, docs/fr.md            user documentation, re-hosted by Gladys (manda
 test/                             node --test, fake Gladys of the SDK, virtual clock (test/kit), real fixtures
 scripts/cover.mjs                 generates cover.png (800x534), plain Node
 .github/scripts/release.mjs       release helpers (manifest bump, changelog), tested in test/
+.github/scripts/mutants.mjs       mutation check of the guards (memcap node .github/scripts/mutants.mjs)
 ```
 
 NDBC rules kept by the code: one request at a time, 3 s between two starts; only the head of a file (`Range`),
