@@ -94,3 +94,8 @@
   the sandbox Gladys (`gi install`, RUNNING) with 46026 and 45132: status, Discovery (14 features each), test
   button, and a device created through the API got its values at once. The sandbox integration was stopped
   afterwards so it does not keep reading the NDBC.
+
+## Next patch (review r4, 5eb8943)
+
+- Test with a slow `setConnectionStatus` that the next round is armed before the status (only the reviewer's s16 D kills "status before the next round is armed").
+- Keep `.github/scripts/mutants.mjs` in step with the code.
