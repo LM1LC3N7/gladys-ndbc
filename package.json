@@ -1,6 +1,6 @@
 {
   "name": "gladys-ndbc",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Unofficial NDBC integration for Gladys Assistant: NOAA buoys and coastal stations (waves, wind, water and air temperature, pressure) from the public realtime files of the National Data Buoy Center.",
   "type": "module",

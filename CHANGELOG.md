@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-31
+
 ### Added
 
 - First version: the NOAA NDBC buoys and coastal stations in Gladys, read from
@@ -30,3 +32,6 @@ the notes of the version's GitHub Release.
   period of 0 s is missing.
 - Status per station (values under 2 h old, silent, every value missing, read
   failure), updated when a value turns 2 h old; "Show the last read" button.
+
+[Unreleased]: https://github.com/LM1LC3N7/gladys-ndbc/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-ndbc/releases/tag/v0.1.1
