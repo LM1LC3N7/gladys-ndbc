@@ -52,6 +52,9 @@
   of 4, the Gulf of Mexico platforms KATP, KGBK...; `realtime2/KATP.txt` answers in the same format).
 - **Server time = Date + Age** (review r1: CloudFront answers carry the Date of the origin and an `Age` up to
   576 s, 304 included); `Age` whole seconds, at most a day. A Retry-After date stays relative to Date.
+- **Interrupted round** (review r2): a configuration saved or a reconnection in the middle of a round keeps the
+  answer of the request that went (unless stopped) and leaves the stations not read yet due at once for the next
+  start; a full round clears them. A copy without `Age` stays undetectable (said in the docs).
 - **Wave periods** (DPD, APD) of 0 s are "not available" (partner buoys send `DPD 0` with a wave height).
 - **History**: values are published without `created_at` (a recent value must reach the scenes): Gladys dates
   them at publication, up to about an hour after the observation for hourly stations; said in the docs.
@@ -71,7 +74,8 @@
   (the same check in `request` answers `paused`, handled the same way); the generation check right after
   `load()` (the one after `publishDevices` returns before anything else is done); the coalescing of `start`
   (an older start that still runs stops at its next generation check). The clamp of a retry to the end of a pause (the next read waits for the end of
-  the pause anyway). The other guard mutants are killed by
+  the pause anyway); `read > 0` vs `read >= 0` and counting paused or stopped reads (`refused` is only set after a
+  read went). The other guard mutants are killed by
   the tests (runners kept outside the repository).
 - **Checked live on 2026-10-30**: the client and the parser against the real files of 46026, 45132, PSBM1,
   44025, 51201 and a missing id (404), then the 304; the whole app against them (fake Gladys); then installed in

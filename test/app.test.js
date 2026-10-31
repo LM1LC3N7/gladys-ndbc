@@ -1144,3 +1144,117 @@ test('a station whose back-off ended and that then fails otherwise is not read i
   const at = s.api.calls.filter((c) => c.id === '45132').map((c) => Math.round(c.at / MINUTE));
   assert.deepEqual(at, [0, 2, 4, 8, 16]);
 });
+
+test('one station in 503 and another in 404 or network failure: never a global pause (s13)', async () => {
+  for (const second of ['404', 'network']) {
+    const s = await setup({
+      config: { stations: '46026, 45132', refresh_minutes: 30 },
+      api: createApi((url, api, call) => {
+        if (call.id === '46026') return status(503, api.clock.wall());
+        return second === '404' ? status(404, api.clock.wall()) : 'network';
+      }),
+    });
+    await s.begin();
+    await s.wait(10 * SECOND);
+    assert.equal(s.app.pausedFor(), 0, second);
+    assert.doesNotMatch(statusEn(s.fake), /paused until/, second);
+    assert.match(statusEn(s.fake), /46026: NDBC server error \(503\), next try/, second);
+    assert.equal(s.store.data.pause?.until ?? null, null, second);
+  }
+});
+
+test('a round interrupted by a configuration save reads its unread stations at once', async () => {
+  const ids = ['46026', '45132', 'PSBM1', '44025'];
+  const config = { stations: ids.join(','), refresh_minutes: 30 };
+  const s = await setup({ config });
+  await s.begin();
+  await s.wait(3 * SECOND + 500);
+  assert.equal(s.api.calls.length, 2);
+  // The same configuration saved after the second request.
+  s.app.start(config);
+  await s.flush();
+  await s.wait(20 * SECOND);
+  // Every station read once, none twice; the next round at the interval.
+  assert.deepEqual(
+    s.api.calls.map((c) => c.id),
+    ids,
+  );
+  assert.deepEqual(published(s.fake, F('PSBM1', 'air-temperature')), [12.7]);
+  await s.wait(29 * MINUTE);
+  assert.equal(s.api.calls.length, 4);
+  await s.wait(MINUTE);
+  assert.equal(s.api.calls.length, 8);
+});
+
+test('a reconnection in the middle of a round: the stations not read are read on the new connection', async () => {
+  const ids = ['46026', '45132', 'PSBM1', '44025'];
+  const config = { stations: ids.join(','), refresh_minutes: 30 };
+  const s = await setup({ config });
+  await s.begin();
+  await s.wait(3 * SECOND + 500);
+  await s.app.disconnected();
+  await s.wait(10 * SECOND);
+  assert.equal(s.api.calls.length, 2);
+  s.app.connected();
+  await s.flush();
+  await s.wait(10 * SECOND);
+  assert.deepEqual(
+    s.api.calls.map((c) => c.id),
+    ids,
+  );
+});
+
+test('a retry is spent by a full round that comes first (interval shortened meanwhile)', async () => {
+  let down = true;
+  const s = await setup({
+    config: { ...ONE, refresh_minutes: 60 },
+    api: createApi((url, api, call) => (down ? 'network' : defaultWorld(url, api, call))),
+  });
+  await s.begin();
+  // Network failures at 0, 2 and 6 min: the next retry would come at 14 min.
+  await s.wait(7 * MINUTE);
+  assert.deepEqual(
+    s.api.calls.map((c) => Math.round(c.at / MINUTE)),
+    [0, 2, 6],
+  );
+  down = false;
+  s.app.start({ ...ONE, refresh_minutes: 10 });
+  await s.flush();
+  await s.wait(20 * MINUTE);
+  // The full round at 10 min reads it; the retry of 14 min is gone.
+  assert.deepEqual(
+    s.api.calls.map((c) => Math.round(c.at / MINUTE)),
+    [0, 2, 6, 10, 20],
+  );
+});
+
+test('a success arriving after a configuration save still resets the pause levels', async () => {
+  let n = 0;
+  let release;
+  const s = await setup({
+    config: { ...ONE, refresh_minutes: 60 },
+    api: createApi((url, api, call) => {
+      n += 1;
+      if (n === 1 || n === 3) return status(429, api.clock.wall());
+      // The second request (after the pause) answers late, after a save.
+      return new Promise((resolve) => {
+        release = () => resolve(defaultWorld(url, api, call));
+      });
+    }),
+  });
+  await s.begin();
+  await s.wait(5 * MINUTE + SECOND);
+  assert.equal(s.api.calls.length, 2);
+  s.app.start({ ...ONE, refresh_minutes: 60 });
+  await s.flush();
+  release();
+  await s.flush();
+  assert.equal(s.app.persisted.pause.level429, 0, 'the late success resets the level');
+  // The next 429 pauses 5 min again, not 10.
+  s.app.start({ stations: '46026, 45132', refresh_minutes: 60 });
+  await s.flush();
+  await s.wait(10 * SECOND);
+  assert.equal(s.api.calls.length, 3);
+  assert.equal(s.app.persisted.pause.level429, 1);
+  assert.ok(Math.abs(s.app.pausedFor() - 5 * MINUTE) < 15 * SECOND);
+});

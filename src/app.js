@@ -107,6 +107,7 @@ export class NdbcApp {
     this.statusTimer = null;
     this.sleeps = new Set();
     this.pendingStart = undefined;
+    this.stopped = false;
     this.starting = null;
 
     this.lastRequestMono = -Infinity;
@@ -122,6 +123,8 @@ export class NdbcApp {
     /** Stations added to the configuration, read alone: `{ ids, dueMono }`. */
     this.added = null;
     this.lastAddedMono = -Infinity;
+    /** Stations an interrupted round did not read: read at once by the next start. */
+    this.unread = new Set();
     this.lastStatus = null;
     this.lastStations = null;
     /** Monotonic times of the states published in the last minute. */
@@ -206,6 +209,7 @@ export class NdbcApp {
 
   async stop() {
     this.gen += 1;
+    this.stopped = true;
     this.cancelTimers();
     await this.persist();
   }
@@ -260,6 +264,7 @@ export class NdbcApp {
 
   async applyConfig(raw) {
     this.gen += 1;
+    this.stopped = false;
     const gen = this.gen;
     this.cancelTimers();
     const config = normalizeConfig(raw);
@@ -329,6 +334,7 @@ export class NdbcApp {
       const ids = new Set([...this.retry.ids].filter((id) => config.stations.includes(id)));
       this.retry = ids.size > 0 ? { ...this.retry, ids } : null;
     }
+    for (const id of [...this.unread]) if (!config.stations.includes(id)) this.unread.delete(id);
     // Added stations are read alone, at most once a minute; the others keep their turn.
     const pending = new Set([...(this.added?.ids ?? []), ...added]);
     const kept = [...pending].filter((id) => config.stations.includes(id));
@@ -511,6 +517,7 @@ export class NdbcApp {
     let next = (this.nextDueMono ?? mono) - mono;
     if (this.retry) next = Math.min(next, this.retry.dueMono - mono);
     if (this.added) next = Math.min(next, this.added.dueMono - mono);
+    if (this.unread.size > 0) next = Math.min(next, 0);
     for (const back of this.backoff.values()) next = Math.min(next, back.untilMono - mono);
     return Math.max(this.pausedFor(mono), next);
   }
@@ -525,6 +532,8 @@ export class NdbcApp {
       this.lastAddedMono = mono;
     }
     for (const [id, back] of this.backoff) if (back.untilMono <= mono) ids.add(id);
+    for (const id of this.unread) ids.add(id);
+    this.unread.clear();
     return ids;
   }
 
@@ -553,6 +562,7 @@ export class NdbcApp {
       this.lastAttemptMono = start;
       this.nextDueMono = start + config.refreshMinutes * MINUTE;
       this.added = null;
+      this.unread.clear();
     }
     const retryLevel = this.retry?.level ?? 0;
     // A retry is spent by a full round or once its stations are read.
@@ -561,12 +571,15 @@ export class NdbcApp {
     this.persisted.lastAttemptAt = this.now();
     const saved = await this.persist();
     this.saveFailed = !saved && (this.storeStatus === 'ok' || this.storeStatus === 'absent');
-    if (gen !== this.gen) return;
+    const ids = config.stations.filter((id) => !only || only.has(id));
+    if (gen !== this.gen) {
+      this.leaveUnread(ids);
+      return;
+    }
     const failed = new Set();
     let read = 0;
     let refused = null;
-    for (const id of config.stations) {
-      if (only && !only.has(id)) continue;
+    for (const [index, id] of ids.entries()) {
       const back = this.backoff.get(id);
       if (back && back.untilMono > this.monotonic()) continue;
       if (this.pausedFor() > 0) {
@@ -577,20 +590,13 @@ export class NdbcApp {
       const result = await this.readStation(id, gen);
       if (result.kind !== 'paused' && result.kind !== 'stopped') read += 1;
       if (gen !== this.gen) {
-        // The pause a refusal started (in request) is kept in /data all the same.
-        if (!result.ok && result.kind === 'rate') await this.persist();
-        // Refused for a passing cause: still due for the configuration now
-        // running (when it is running and still has this station).
-        if (
-          !result.ok &&
-          RETRIED.includes(result.kind) &&
-          this.cycleTimer &&
-          this.config?.stations.includes(id)
-        ) {
-          const mono = this.monotonic();
-          this.armRetry(new Set([id]), 0, mono);
-          this.scheduleCycle(this.leftBefore(mono), this.gen);
-        }
+        // Interrupted (configuration saved, reconnection): the answer of a
+        // request that went is kept for the configuration now running; the
+        // stations not read yet stay due and are read soon, not at the
+        // next interval.
+        const sent = result.kind !== 'paused' && result.kind !== 'stopped';
+        const kept = sent && (await this.keepLate(id, result));
+        this.leaveUnread(ids.slice(kept ? index + 1 : index));
         return;
       }
       if (result.ok) {
@@ -601,7 +607,10 @@ export class NdbcApp {
         if (this.persisted.pause) this.persisted.pause = NO_PAUSE();
         this.results.set(id, result);
         await this.publishStation(id, gen);
-        if (gen !== this.gen) return;
+        if (gen !== this.gen) {
+          this.leaveUnread(ids.slice(index + 1));
+          return;
+        }
       } else {
         if (BACKED_OFF.includes(result.kind)) this.startBackoff(id, result);
         // Another cause ends the back-off: the retry or the next round reads it,
@@ -631,6 +640,38 @@ export class NdbcApp {
     }
     if (gen !== this.gen) return;
     await this.updateStatus(gen);
+  }
+
+  /** Stations an interrupted round did not read: due at once for the configuration running. */
+  leaveUnread(ids) {
+    for (const id of ids) this.unread.add(id);
+    if (this.cycleTimer && this.config) {
+      this.scheduleCycle(this.leftBefore(this.monotonic()), this.gen);
+    }
+  }
+
+  /**
+   * The answer of a request that went before the round was interrupted, kept
+   * for the configuration now running when it still has the station: data
+   * stored and published, a back-off or a retry as in a round.
+   */
+  async keepLate(id, result) {
+    // Stopped (disconnection, shutdown): nothing is kept, the station stays unread.
+    if (this.stopped || !this.config?.stations.includes(id)) return false;
+    const gen = this.gen;
+    if (result.ok) {
+      this.backoff.delete(id);
+      this.pauseUntilMono = null;
+      if (this.persisted.pause) this.persisted.pause = NO_PAUSE();
+      this.results.set(id, result);
+      await this.publishStation(id, gen);
+      return true;
+    }
+    if (result.kind === 'rate') await this.persist();
+    if (BACKED_OFF.includes(result.kind)) this.startBackoff(id, result);
+    else if (RETRIED.includes(result.kind)) this.armRetry(new Set([id]), 0, this.monotonic());
+    this.recordFailure(id, result);
+    return true;
   }
 
   /**

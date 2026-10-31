@@ -84,6 +84,8 @@ Après l'enregistrement, ouvrez la découverte pour créer les appareils.
 - une station dont la lecture a échoué pour une cause passagère (réseau, délai, pause) est relue avant la
   série suivante : à la fin de la pause, sinon 2 minutes plus tard, doublé à chaque nouvel échec, tant que cela
   tombe avant la série suivante ;
+- une série interrompue par une configuration enregistrée ou une reconnexion garde la réponse de la requête
+  partie ; les stations qu'elle n'avait pas encore lues sont lues juste après, pas à l'intervalle suivant ;
 - une station sans fichier temps réel (404) est réessayée 1 heure plus tard, puis 2, 4… jusqu'à 24 heures, sur
   sa propre minuterie (les autres stations sont lues normalement).
 
@@ -106,6 +108,8 @@ lecture » donne le même texte et ne lit jamais.
   s'arrête, la station devient « muette », puis le fichier peut disparaître (404).
 - Les lignes des stations dans le statut sont raccourcies quand 10 stations n'y tiendraient pas (les lignes
   générales, prochaine lecture et avertissements sur `/data`, restent toujours).
+- Une copie gardée par un cache et servie sans en-tête `Age` paraîtrait plus récente qu'elle ne l'est : ce
+  n'est pas détectable (le CDN du NDBC envoie toujours `Age` ; vu jusqu'à environ 10 minutes).
 - L'âge d'une observation demande l'heure du serveur du NDBC : une réponse sans `Date` lisible, ou à plus d'un
   jour de l'horloge de votre Gladys, ne publie rien (« l'heure du serveur est illisible »).
 - Une colonne dont l'unité sur la deuxième ligne d'en-tête n'est pas celle attendue (des nœuds au lieu de m/s

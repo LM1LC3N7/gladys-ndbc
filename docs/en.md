@@ -78,6 +78,8 @@ After saving, open Discovery to create the devices.
 - a station whose read failed for a passing cause (network, timeout, pause) is read again before the next
   round: at the end of the pause, else 2 minutes later, doubled at each new failure, as long as that comes
   before the next round;
+- a round interrupted by a saved configuration or a reconnection keeps the answer of the request that went;
+  the stations it had not read yet are read right after, not at the next interval;
 - a station without realtime file (404) is tried again 1 hour later, then 2, 4... up to 24 hours, on its own
   timer (the other stations are read as usual).
 
@@ -98,6 +100,8 @@ Gladys shows the integration as connected only when the last read of at least on
   "silent", then the file may disappear (404).
 - The station lines of the status are shortened when 10 stations would not fit in it (the global lines, next
   read and `/data` warnings, always stay).
+- A copy kept by a cache and served without an `Age` header would look newer than it is: it cannot be
+  detected (the NDBC CDN always sends `Age`; seen up to about 10 minutes).
 - The age of an observation needs the time of the NDBC server: an answer without a readable `Date`, or one
   more than a day away from the clock of your Gladys, publishes nothing ("the server time cannot be read").
 - A column whose unit on the second header line is not the expected one (for example knots instead of m/s) is
